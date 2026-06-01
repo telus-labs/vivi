@@ -1,0 +1,106 @@
+import { describe, it, expect, vi } from "vitest";
+
+// Avoid import-time side effects (runtime detection shells out to `docker`,
+// paths() creates directories).
+vi.mock("./runtime.js", () => ({
+  runtime: { bin: "docker", composeBin: "docker compose" },
+}));
+vi.mock("./paths.js", () => ({
+  paths: () => ({ socketsDir: "/tmp/vivi-test-sockets" }),
+}));
+
+import { validateHostConfig, parseContainerScopedId } from "./docker-namespace-proxy.js";
+
+describe("validateHostConfig", () => {
+  it("allows an ordinary container", () => {
+    expect(validateHostConfig({ Image: "node", HostConfig: {} }).allowed).toBe(true);
+  });
+
+  it("allows named volumes and port maps", () => {
+    const v = validateHostConfig({
+      HostConfig: {
+        Binds: ["mydata:/data", "named-vol:/cache:ro"],
+        PortBindings: { "3000/tcp": [{ HostPort: "3000" }] },
+      },
+    });
+    expect(v.allowed).toBe(true);
+  });
+
+  it("blocks privileged", () => {
+    expect(validateHostConfig({ HostConfig: { Privileged: true } }).allowed).toBe(false);
+  });
+
+  it("blocks --cap-add", () => {
+    expect(validateHostConfig({ HostConfig: { CapAdd: ["SYS_ADMIN"] } }).allowed).toBe(false);
+  });
+
+  it("blocks device passthrough", () => {
+    const v = validateHostConfig({ HostConfig: { Devices: [{ PathOnHost: "/dev/sda" }] } });
+    expect(v.allowed).toBe(false);
+  });
+
+  it.each(["PidMode", "NetworkMode", "IpcMode", "UTSMode", "UsernsMode", "CgroupnsMode"])(
+    "blocks %s=host",
+    (mode) => {
+      expect(validateHostConfig({ HostConfig: { [mode]: "host" } }).allowed).toBe(false);
+    },
+  );
+
+  it("allows non-host network modes", () => {
+    expect(validateHostConfig({ HostConfig: { NetworkMode: "bridge" } }).allowed).toBe(true);
+  });
+
+  it("blocks unconfined seccomp/apparmor", () => {
+    expect(validateHostConfig({ HostConfig: { SecurityOpt: ["seccomp=unconfined"] } }).allowed).toBe(false);
+    expect(validateHostConfig({ HostConfig: { SecurityOpt: ["apparmor=unconfined"] } }).allowed).toBe(false);
+  });
+
+  it.each([
+    "/var/run/docker.sock:/var/run/docker.sock",
+    "/run/docker.sock:/sock",
+    "/path/to/docker.sock:/x",
+    "/:/host",
+    "/etc:/etc",
+    "/proc:/proc",
+    "/sys:/sys",
+    "/var/lib/docker:/x",
+  ])("blocks dangerous bind %s", (bind) => {
+    expect(validateHostConfig({ HostConfig: { Binds: [bind] } }).allowed).toBe(false);
+  });
+
+  it("blocks docker.sock via the Mounts API", () => {
+    const v = validateHostConfig({
+      HostConfig: { Mounts: [{ Type: "bind", Source: "/var/run/docker.sock", Target: "/var/run/docker.sock" }] },
+    });
+    expect(v.allowed).toBe(false);
+  });
+
+  it("tolerates a missing HostConfig", () => {
+    expect(validateHostConfig({}).allowed).toBe(true);
+    expect(validateHostConfig(null).allowed).toBe(true);
+  });
+});
+
+describe("parseContainerScopedId", () => {
+  it("extracts the id for container-scoped ops", () => {
+    expect(parseContainerScopedId("/v1.43/containers/abc123/json")).toBe("abc123");
+    expect(parseContainerScopedId("/v1.43/containers/abc123/stop")).toBe("abc123");
+    expect(parseContainerScopedId("/v1.43/containers/abc123/exec")).toBe("abc123");
+    expect(parseContainerScopedId("/v1.43/containers/abc123")).toBe("abc123");
+    expect(parseContainerScopedId("/v1.43/containers/abc123/archive?path=/x")).toBe("abc123");
+  });
+
+  it("returns null for collection endpoints", () => {
+    expect(parseContainerScopedId("/v1.43/containers/create")).toBeNull();
+    expect(parseContainerScopedId("/v1.43/containers/json")).toBeNull();
+    expect(parseContainerScopedId("/v1.43/containers/json?all=1")).toBeNull();
+    expect(parseContainerScopedId("/v1.43/containers/prune")).toBeNull();
+  });
+
+  it("returns null for non-container paths", () => {
+    expect(parseContainerScopedId("/v1.43/images/json")).toBeNull();
+    expect(parseContainerScopedId("/v1.43/exec/xyz/start")).toBeNull();
+    expect(parseContainerScopedId("/_ping")).toBeNull();
+    expect(parseContainerScopedId("/v1.43/version")).toBeNull();
+  });
+});

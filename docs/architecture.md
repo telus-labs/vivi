@@ -14,15 +14,20 @@ You (browser) ──── REST + WebSocket ────► Vivi server (Express
                                    │  • git + gh + Docker CLI         │
                                    │  • git daemon for push/pull      │
                                    │                                  │
-                                   │  MITM Proxy ◄──── all traffic    │
+                                   │  MITM Proxy ◄─ sandbox traffic   │
                                    │  • injects API keys              │
                                    │  • intercepts git push           │
                                    │  • enforces allowlist            │
                                    │                                  │
-                                   │  DinD daemon (shared)            │
+                                   │  DinD daemon (shared) ─► internet│
                                    │  • per-session socket proxies    │
+                                   │  • NOT behind the MITM proxy ←── │
                                    └──────────────────────────────────┘
 ```
+
+> The MITM proxy/allowlist governs the **sandbox process**. Containers the agent
+> launches in the shared DinD daemon have their own internet egress and are not
+> proxied — see [infra-limitations.md](infra-limitations.md).
 
 ## Components
 
@@ -122,10 +127,15 @@ React + Vite SPA with a multi-tab session interface.
 | Layer | Enforcement |
 |-------|-------------|
 | Git bundle | Only tracked files enter the sandbox |
-| Internal Docker network | Sandbox has no direct internet access |
-| MITM proxy | All HTTPS traffic inspected; allowlist enforced |
+| Internal Docker network | Sandbox process has no direct internet access |
+| MITM proxy | Sandbox-process HTTPS inspected; allowlist enforced (**not** DinD-launched containers — see below) |
 | Credential proxy | Real keys exist only in the proxy process |
-| Docker namespace proxy | Per-session socket prevents container escape |
+| Docker namespace proxy | Per-session ownership checks + create-time escape/escalation denial (`validateHostConfig`) |
 | Rate limiting | `express-rate-limit` on expensive endpoints |
-| Shell injection prevention | `execFileSync` with argument arrays, no shell interpolation |
+| Shell injection prevention | `execFileSync`/arg-array invocation; MITM cert hostnames validated before use |
 | Path traversal prevention | `path.resolve()` + prefix validation on all file access |
+
+**Boundaries this does _not_ cover** (see [infra-limitations.md](infra-limitations.md)):
+containers the agent launches in the shared DinD daemon have unproxied internet
+egress; the DinD daemon, its image cache, and agent-created volumes/networks are
+shared across sessions with no per-session quota.

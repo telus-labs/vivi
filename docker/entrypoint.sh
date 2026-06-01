@@ -1,5 +1,8 @@
 #!/bin/bash
-set -e
+# Intentionally NOT `set -e`: drop-ins are sourced into this shell, so under
+# errexit a single non-zero line (e.g. an optional cp/chown) would abort boot
+# before /tmp/.sandbox-ready is created — leaving the container to time out with
+# no shell to debug from. We log drop-in failures and keep going instead.
 
 echo "[entrypoint] Running drop-in init scripts..."
 
@@ -7,8 +10,11 @@ echo "[entrypoint] Running drop-in init scripts..."
 for f in /docker-entrypoint.d/*.sh; do
   if [ -x "$f" ]; then
     echo "[entrypoint] Running $(basename "$f")..."
-    source "$f"
-    echo "[entrypoint] Finished $(basename "$f")"
+    if source "$f"; then
+      echo "[entrypoint] Finished $(basename "$f")"
+    else
+      echo "[entrypoint] WARNING: $(basename "$f") exited $? — continuing so the sandbox still boots"
+    fi
   fi
 done
 

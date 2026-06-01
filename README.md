@@ -19,12 +19,12 @@ Currently built around [Claude Code](https://docs.anthropic.com/en/docs/claude-c
 Your agent gets a full Linux environment. What it *doesn't* get is your secrets.
 
 - **Git bundle cloning** — only tracked files enter the sandbox. `.env`, credentials, `node_modules`, gitignored files — none of it.
-- **MITM proxy** — all sandbox traffic routes through a TLS-intercepting proxy. API keys are injected at the proxy layer, so the sandbox only ever sees placeholder tokens.
+- **MITM proxy** — the sandbox process's traffic routes through a TLS-intercepting proxy. API keys are injected at the proxy layer, so the sandbox only ever sees placeholder tokens.
 - **Network allowlist** — only approved hosts are reachable (npm, GitHub, Anthropic API by default). Everything else gets a 403.
 - **Credential proxy** — git and `gh` credentials come from your host's existing setup (`git credential fill` / `gh auth token`). Zero config inside the sandbox.
-- **Docker namespace proxy** — per-session socket proxy prevents containers from escaping their session or escalating privileges.
+- **Docker namespace proxy** — per-session socket proxy scopes Docker access to the session (no cross-session reach) and rejects escape-prone container configs (`--privileged`, `--cap-add`, host namespaces, docker-socket mounts, …).
 
-All restrictions are enforced at the network/proxy layer, not with CLI wrappers. The sandbox physically cannot bypass them.
+Sandbox-process restrictions are enforced at the network/proxy layer, not with CLI wrappers. **One boundary to know:** containers the agent launches inside the Docker-in-Docker daemon have their own internet egress and are *not* routed through the MITM proxy or allowlist. See [docs/infra-limitations.md](docs/infra-limitations.md) for the full isolation model and its edges.
 
 ## Git workflow
 

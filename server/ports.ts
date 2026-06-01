@@ -145,6 +145,8 @@ export function openPort(
 
     socatProcesses.add(socat);
 
+    let socatStderr = "";
+
     // Handle EPIPE/write errors on stdin — expected when socat exits before we stop writing
     socat.stdin?.on("error", (err) => {
       console.warn(`[ports] socat stdin error (${sandboxContainerName}→${socatTarget}): ${err.message}`);
@@ -153,7 +155,9 @@ export function openPort(
 
     // Log stderr for debugging
     socat.stderr?.on("data", (data: Buffer) => {
-      console.error(`[ports] socat stderr (${sandboxContainerName}→${socatTarget}): ${data.toString().trim()}`);
+      const text = data.toString();
+      socatStderr += text;
+      console.error(`[ports] socat stderr (${sandboxContainerName}→${socatTarget}): ${text.trim()}`);
     });
 
     // Bidirectional piping: socket <-> socat stdin/stdout
@@ -188,6 +192,12 @@ export function openPort(
             `Port ${containerPort} is not reachable in the sandbox container.\n` +
             `Make sure a server is running on port ${containerPort}.\n`
           );
+        }
+        // If the sandbox container itself is gone, the forward is dead for good —
+        // reap it so we don't leave a listening host port that 502s forever.
+        if (/no such container|is not running|not running/i.test(socatStderr)) {
+          console.warn(`[ports] Sandbox container ${sandboxContainerName} is gone — reaping forward on port ${containerPort}`);
+          closePort(sessionId, containerPort);
         }
       } else if (!socket.destroyed) {
         socket.end();
@@ -247,30 +257,42 @@ export function openPort(
 }
 
 /**
- * Close a single port forward.
+ * Close port forward(s) for a (session, containerPort) pair.
+ *
+ * openPort keys forwards by session+port+targetHost, so a single container
+ * port can map to more than one forward (localhost and/or a DinD container IP).
+ * The DELETE API only carries session+port, so we close every matching forward
+ * rather than a single keyed lookup (which previously missed targetHost forwards).
  */
 export function closePort(sessionId: string, containerPort: number): boolean {
-  const key = makeKey(sessionId, containerPort);
-  const pf = portForwards.get(key);
-  if (!pf) return false;
-
-  pf.status = "closing";
-
-  // Kill all active socat processes
-  for (const proc of pf.socatProcesses) {
-    try { proc.kill(); } catch (err: any) {
-      console.warn(`[ports] Failed to kill socat process: ${err.message}`);
+  const matches: [string, PortForwardInternal][] = [];
+  for (const [key, pf] of portForwards.entries()) {
+    if (pf.sessionId === sessionId && pf.containerPort === containerPort) {
+      matches.push([key, pf]);
     }
   }
-  pf.socatProcesses.clear();
+  if (matches.length === 0) return false;
 
-  // Close the TCP server
-  pf.server.close(() => {
-    console.log(`[ports] Closed forwarding on host port ${pf.hostPort}`);
-  });
+  for (const [key, pf] of matches) {
+    if (pf.status === "closing") continue;
+    pf.status = "closing";
 
-  allocatedHostPorts.delete(pf.hostPort);
-  portForwards.delete(key);
+    // Kill all active socat processes
+    for (const proc of pf.socatProcesses) {
+      try { proc.kill(); } catch (err: any) {
+        console.warn(`[ports] Failed to kill socat process: ${err.message}`);
+      }
+    }
+    pf.socatProcesses.clear();
+
+    // Close the TCP server
+    pf.server.close(() => {
+      console.log(`[ports] Closed forwarding on host port ${pf.hostPort}`);
+    });
+
+    allocatedHostPorts.delete(pf.hostPort);
+    portForwards.delete(key);
+  }
   notify();
 
   return true;

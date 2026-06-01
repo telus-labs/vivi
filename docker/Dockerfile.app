@@ -27,8 +27,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install Claude Code CLI — required by the login / setup-token PTY flow.
 # The official installer drops the binary at ~/.local/bin/claude; symlink into
 # a globally-resolvable location so Bun.which("claude") inside the server finds it.
-RUN curl -fsSL https://claude.ai/install.sh | bash \
-    && ln -sf /root/.local/bin/claude /usr/local/bin/claude
+# Pinned (native installer takes a positional version); same pin as the fallback.
+ARG CLAUDE_CODE_VERSION=2.1.81
+RUN (curl -fsSL https://claude.ai/install.sh | bash -s -- "${CLAUDE_CODE_VERSION}" \
+        && ln -sf /root/.local/bin/claude /usr/local/bin/claude \
+        && claude --version) \
+    || (echo "native installer failed; falling back to bun global install" \
+        && bun install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
+        && ln -sf /root/.bun/install/global/node_modules/.bin/claude /usr/local/bin/claude \
+        && claude --version)
 
 WORKDIR /app
 

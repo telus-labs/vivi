@@ -31,10 +31,14 @@ services:
   # Each sandbox connects via a per-session Unix socket proxy (server/docker-namespace-proxy.ts)
   # which enforces session-label namespacing and blocks --privileged containers.
   dind:
-    image: docker:dind
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dind
     privileged: true
     environment:
       DOCKER_TLS_CERTDIR: ""
+      # Upstream the in-dind relay forwards nested-container egress to.
+      VIVI_PROXY_UPSTREAM: "proxy:7443"
     ports:
       - "127.0.0.1:2375:2375"
     volumes:

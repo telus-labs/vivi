@@ -9,7 +9,7 @@ vi.mock("./paths.js", () => ({
   paths: () => ({ socketsDir: "/tmp/vivi-test-sockets" }),
 }));
 
-import { validateHostConfig, parseContainerScopedId } from "./docker-namespace-proxy.js";
+import { validateHostConfig, parseContainerScopedId, buildNestedContainerEnv } from "./docker-namespace-proxy.js";
 
 describe("validateHostConfig", () => {
   it("allows an ordinary container", () => {
@@ -78,6 +78,26 @@ describe("validateHostConfig", () => {
   it("tolerates a missing HostConfig", () => {
     expect(validateHostConfig({}).allowed).toBe(true);
     expect(validateHostConfig(null).allowed).toBe(true);
+  });
+});
+
+describe("buildNestedContainerEnv", () => {
+  const PROXY = "http://172.17.0.1:7443";
+
+  it("injects proxy vars onto an empty env", () => {
+    const env = buildNestedContainerEnv(undefined, PROXY);
+    expect(env).toContain(`HTTP_PROXY=${PROXY}`);
+    expect(env).toContain(`HTTPS_PROXY=${PROXY}`);
+    expect(env).toContain(`https_proxy=${PROXY}`);
+    expect(env.some((e) => e.startsWith("NO_PROXY="))).toBe(true);
+  });
+
+  it("preserves unrelated env and overrides caller-supplied proxy vars", () => {
+    const env = buildNestedContainerEnv(["FOO=bar", "HTTP_PROXY=http://evil:1", "http_proxy=http://evil:1"], PROXY);
+    expect(env).toContain("FOO=bar");
+    expect(env.filter((e) => e.startsWith("HTTP_PROXY="))).toEqual([`HTTP_PROXY=${PROXY}`]);
+    expect(env.filter((e) => e.startsWith("http_proxy="))).toEqual([`http_proxy=${PROXY}`]);
+    expect(env).not.toContain("HTTP_PROXY=http://evil:1");
   });
 });
 

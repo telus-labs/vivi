@@ -42,10 +42,10 @@ beforeAll(async () => {
       req.on("data", (c) => (body += c));
       req.on("end", () => {
         res.writeHead(201, { "Content-Type": "application/json" });
-        // Echo the labels back so the test can confirm the session label was injected.
-        let labels = {};
-        try { labels = JSON.parse(body).Labels ?? {}; } catch {}
-        res.end(JSON.stringify({ Id: "created123", _labels: labels }));
+        // Echo labels + env back so the test can confirm what the proxy injected.
+        let labels = {}; let env: string[] = [];
+        try { const b = JSON.parse(body); labels = b.Labels ?? {}; env = b.Env ?? []; } catch {}
+        res.end(JSON.stringify({ Id: "created123", _labels: labels, _env: env }));
       });
       return;
     }
@@ -117,6 +117,9 @@ describe("per-session docker proxy (wire)", () => {
     expect(res).toMatch(/^HTTP\/1\.1 201/);
     expect(res).toContain("created123");
     expect(res).toContain('"vivi.session":"sessA"');
+    // Egress is forced through the in-dind proxy relay.
+    expect(res).toContain("HTTP_PROXY=http://172.17.0.1:7443");
+    expect(res).toContain("https_proxy=http://172.17.0.1:7443");
   });
 
   it("forwards a container op for a container owned by this session", async () => {

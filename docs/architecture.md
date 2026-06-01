@@ -14,20 +14,22 @@ You (browser) ──── REST + WebSocket ────► Vivi server (Express
                                    │  • git + gh + Docker CLI         │
                                    │  • git daemon for push/pull      │
                                    │                                  │
-                                   │  MITM Proxy ◄─ sandbox traffic   │
+                                   │  MITM Proxy ◄─ all egress        │
                                    │  • injects API keys              │
                                    │  • intercepts git push           │
                                    │  • enforces allowlist            │
-                                   │                                  │
-                                   │  DinD daemon (shared) ─► internet│
+                                   │        ▲                         │
+                                   │  DinD daemon (shared) ───────────┘
                                    │  • per-session socket proxies    │
-                                   │  • NOT behind the MITM proxy ←── │
+                                   │  • egress firewall → proxy relay │
                                    └──────────────────────────────────┘
 ```
 
-> The MITM proxy/allowlist governs the **sandbox process**. Containers the agent
-> launches in the shared DinD daemon have their own internet egress and are not
-> proxied — see [infra-limitations.md](infra-limitations.md).
+> Both the sandbox process **and** containers it launches in DinD egress through
+> the MITM proxy: DinD drops direct public traffic and forwards a relay to the
+> proxy, and the per-session socket proxy injects the proxy env into every nested
+> container. The shared DinD image cache and agent-created volumes/networks are
+> not namespaced per session.
 
 ## Components
 
@@ -128,12 +130,16 @@ React + Vite SPA with a multi-tab session interface.
 |-------|-------------|
 | Git bundle | Only tracked files enter the sandbox |
 | Internal Docker network | Sandbox process has no direct internet access |
-| MITM proxy | Sandbox-process HTTPS inspected; allowlist enforced (**not** DinD-launched containers — see below) |
+| MITM proxy | HTTPS inspected; allowlist enforced |
+| DinD egress lockdown | Nested containers' direct public egress is firewalled; forced through the proxy relay (`docker/dind-entrypoint.sh`) |
 | Credential proxy | Real keys exist only in the proxy process |
-| Docker namespace proxy | Per-session ownership checks + create-time escape/escalation denial (`validateHostConfig`) |
+| Docker namespace proxy | Per-session ownership checks + create-time escape/escalation denial (`validateHostConfig`) + proxy-env injection |
 | Rate limiting | `express-rate-limit` on expensive endpoints |
 | Shell injection prevention | `execFileSync`/arg-array invocation; MITM cert hostnames validated before use |
 | Path traversal prevention | `path.resolve()` + prefix validation on all file access |
+
+The shared DinD daemon's image cache and agent-created volumes/networks are not
+namespaced per session — a known trade-off of one DinD daemon for all sessions.
 
 **Boundaries this does _not_ cover** (see [infra-limitations.md](infra-limitations.md)):
 containers the agent launches in the shared DinD daemon have unproxied internet

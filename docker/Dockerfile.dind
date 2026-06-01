@@ -1,0 +1,13 @@
+# Vivi DinD — stock docker:dind plus an entrypoint that forces nested-container
+# egress through the MITM proxy. Without this, containers the agent launches in
+# DinD would have open internet, bypassing the allowlist + TLS interception that
+# constrain the sandbox itself. iptables ships in docker:dind; socat does not.
+FROM docker:dind
+
+RUN apk add --no-cache socat
+
+COPY docker/dind-entrypoint.sh /usr/local/bin/vivi-dind-entrypoint.sh
+RUN chmod +x /usr/local/bin/vivi-dind-entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/vivi-dind-entrypoint.sh"]
+CMD []

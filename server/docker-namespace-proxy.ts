@@ -16,8 +16,13 @@
  * Security model: the sandbox network is internal (no internet access), so sandbox
  * containers cannot reach dind directly — they can only speak Docker through this proxy.
  *
+ * Egress: every nested container gets HTTP(S)_PROXY pointing at the in-dind relay
+ * (see docker/dind-entrypoint.sh) injected at create time, and the dind egress
+ * firewall drops any direct public traffic — so containers the agent launches are
+ * constrained by the same allowlist as the sandbox, with no bypass.
+ *
  * Known shared surface (single dind daemon): the image cache and any agent-created
- * volumes/networks are NOT namespaced per session. See docs/infra-limitations.md.
+ * volumes/networks are not namespaced per session.
  */
 
 import net from "node:net";
@@ -36,6 +41,13 @@ const execAsync = promisify(exec);
 // app's loopback. Allow the compose file / operator to override.
 const DIND_HOST = process.env.DIND_HOST || "127.0.0.1";
 const DIND_PORT = Number(process.env.DIND_PORT) || 2375;
+
+// Address nested containers use to reach the proxy relay running inside dind.
+// The default docker0 gateway (172.17.0.1) is a dind-local address routable from
+// any nested bridge; override if dind uses a non-default bridge subnet.
+const DIND_CONTAINER_PROXY = process.env.DIND_CONTAINER_PROXY || "http://172.17.0.1:7443";
+const NESTED_NO_PROXY = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16";
+const PROXY_ENV_KEYS = ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY", "no_proxy"];
 const SOCKET_DIR = paths().socketsDir;
 export const SESSION_LABEL = "vivi.session";
 
@@ -328,6 +340,27 @@ export function validateHostConfig(bodyObj: any): HostConfigVerdict {
   return { allowed: true };
 }
 
+/**
+ * Build the container Env array with proxy vars forced to the in-dind relay.
+ * Strips any caller-supplied proxy vars first so the agent can't point egress
+ * elsewhere (the dind firewall blocks direct egress regardless; this just makes
+ * the supported path work out of the box for cooperative tooling).
+ */
+export function buildNestedContainerEnv(existingEnv: unknown, proxyUrl: string): string[] {
+  const kept = (Array.isArray(existingEnv) ? existingEnv : [])
+    .map((e) => String(e))
+    .filter((e) => !PROXY_ENV_KEYS.some((k) => e.startsWith(`${k}=`)));
+  return [
+    ...kept,
+    `HTTP_PROXY=${proxyUrl}`,
+    `HTTPS_PROXY=${proxyUrl}`,
+    `http_proxy=${proxyUrl}`,
+    `https_proxy=${proxyUrl}`,
+    `NO_PROXY=${NESTED_NO_PROXY}`,
+    `no_proxy=${NESTED_NO_PROXY}`,
+  ];
+}
+
 // ---------------------------------------------------------------------------
 // Per-container endpoint namespacing
 // ---------------------------------------------------------------------------
@@ -531,6 +564,10 @@ function interceptContainerCreate(
 
     // Inject session label
     bodyObj.Labels = { ...(bodyObj.Labels ?? {}), [SESSION_LABEL]: sessionId };
+
+    // Force egress through the in-dind proxy relay (paired with the dind egress
+    // firewall — see docker/dind-entrypoint.sh).
+    bodyObj.Env = buildNestedContainerEnv(bodyObj.Env, DIND_CONTAINER_PROXY);
 
     const newBodyBuf = Buffer.from(JSON.stringify(bodyObj));
     const newHeaderSection = headerLines

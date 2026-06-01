@@ -74,10 +74,11 @@ services:
     restart: unless-stopped
 
   dind:
-    image: docker:dind
+    image: ghcr.io/telus-oss/vivi-dind:${VIVI_VERSION:-latest}
     privileged: true
     environment:
       DOCKER_TLS_CERTDIR: ""
+      VIVI_PROXY_UPSTREAM: "proxy:7443"
     ports:
       - "127.0.0.1:2375:2375"
     volumes:

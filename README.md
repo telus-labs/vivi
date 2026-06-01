@@ -23,8 +23,9 @@ Your agent gets a full Linux environment. What it *doesn't* get is your secrets.
 - **Network allowlist** — only approved hosts are reachable (npm, GitHub, Anthropic API by default). Everything else gets a 403.
 - **Credential proxy** — git and `gh` credentials come from your host's existing setup (`git credential fill` / `gh auth token`). Zero config inside the sandbox.
 - **Docker namespace proxy** — per-session socket proxy scopes Docker access to the session (no cross-session reach) and rejects escape-prone container configs (`--privileged`, `--cap-add`, host namespaces, docker-socket mounts, …).
+- **Docker-in-Docker egress lockdown** — containers the agent launches in DinD are forced through the same MITM proxy: an in-DinD firewall drops direct public egress and the proxy env is injected into every nested container, so `docker run` can't escape the allowlist either.
 
-Sandbox-process restrictions are enforced at the network/proxy layer, not with CLI wrappers. **One boundary to know:** containers the agent launches inside the Docker-in-Docker daemon have their own internet egress and are *not* routed through the MITM proxy or allowlist. See [docs/infra-limitations.md](docs/infra-limitations.md) for the full isolation model and its edges.
+All of these restrictions are enforced at the network/proxy layer, not with CLI wrappers. The sandbox — and anything it launches — physically cannot bypass them.
 
 ## Git workflow
 

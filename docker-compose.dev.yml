@@ -67,10 +67,13 @@ services:
       retries: 3
 
   dind:
-    image: docker:dind
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dind
     privileged: true
     environment:
       DOCKER_TLS_CERTDIR: ""
+      VIVI_PROXY_UPSTREAM: "proxy:7443"
     ports:
       - "127.0.0.1:2375:2375"
     volumes:

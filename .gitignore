@@ -5,6 +5,11 @@ artifacts
 .env
 config/secrets.json
 config/allowlist.json
+# CLI-generated/fetched compose file — not source, regenerated per version
+config/docker-compose.yml
+config/docker-compose.yml.version
 data/
 vivi-data/
+# Local prod-style state dir holding secrets.json + the SQLite DB — never commit
+vivi-prod/
 *.log

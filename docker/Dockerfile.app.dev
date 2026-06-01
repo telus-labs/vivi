@@ -16,10 +16,12 @@ WORKDIR /app
 # Claude CLI — the `setup-token` login flow shells out to `claude setup-token`
 # on the server side to capture an auth token, so it has to be on PATH here.
 ENV PATH="/root/.local/bin:${PATH}"
-RUN curl -fsSL https://claude.ai/install.sh | bash \
-    && claude --version \
+# Pinned (native installer takes a positional version); same pin as the fallback.
+ARG CLAUDE_CODE_VERSION=2.1.81
+RUN (curl -fsSL https://claude.ai/install.sh | bash -s -- "${CLAUDE_CODE_VERSION}" \
+        && claude --version) \
     || (echo "native installer failed; falling back to bun global install" \
-        && bun install -g @anthropic-ai/claude-code@2.1.81 \
+        && bun install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
         && ln -sf /root/.bun/install/global/node_modules/.bin/claude /usr/local/bin/claude \
         && claude --version)
 

@@ -58,25 +58,27 @@ RUN chmod +x /usr/local/bin/open-git
 RUN useradd -m -s /bin/bash agent \
     && echo 'agent ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/agent
 
-# Install Claude Code CLI
-# Prefer native installer (supports self-update at runtime); fall back to npm if blocked by proxy
-# TODO: figure out how to pin a specific version with the native installer
-RUN echo ">>> Attempting Claude CLI install via native installer..." \
-    && su - agent -c 'curl -fsSL https://claude.ai/install.sh | bash' \
+# Install Claude Code CLI — pinned for reproducible builds. The native installer
+# (preferred; supports self-update at runtime) accepts a version positionally;
+# the npm fallback uses the same pin so both paths produce identical versions.
+ARG CLAUDE_CODE_VERSION=2.1.81
+RUN echo ">>> Installing Claude CLI ${CLAUDE_CODE_VERSION} via native installer..." \
+    && su - agent -c "curl -fsSL https://claude.ai/install.sh | bash -s -- ${CLAUDE_CODE_VERSION}" \
     && echo ">>> Native installer succeeded" \
     || echo ">>> Native installer failed, will fall back to npm"
-RUN if which claude > /dev/null 2>&1; then \
+ENV PATH="/home/agent/.local/bin:$PATH"
+RUN if su - agent -c 'which claude' > /dev/null 2>&1; then \
       echo ">>> Claude CLI installed via native installer"; \
     else \
       echo ">>> Native installer failed, installing Claude CLI via npm..." \
-      && npm install -g @anthropic-ai/claude-code@2.1.81; \
+      && npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}; \
     fi \
-    && claude --version
-ENV PATH="/home/agent/.local/bin:$PATH"
+    && su - agent -c 'claude --version' || claude --version
 
-# Claude config: accept tos, allow dangerously-skip-permissions
+# Claude config: accept tos, allow dangerously-skip-permissions. Model is left
+# unset so Claude Code picks its own current default (no stale pin to maintain).
 RUN mkdir -p /home/agent/.claude && \
-    echo '{"hasCompletedOnboarding": true, "acceptedTos": true, "preferredModel": "claude-opus-4-6"}' > /home/agent/.claude.json && \
+    echo '{"hasCompletedOnboarding": true, "acceptedTos": true}' > /home/agent/.claude.json && \
     chown -R agent:agent /home/agent/.claude /home/agent/.claude.json
 
 # Mark container as sandbox so Claude Code suppresses the bypass-permissions warning

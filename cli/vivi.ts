@@ -64,28 +64,69 @@ function detectComposeBin(): { bin: string; args: string[] } {
 }
 
 async function fetchCompose(version: string): Promise<string> {
+  // For tagged releases the published asset is named docker-compose.yml (built
+  // from docker-compose.full.yml by the release workflow). For `dev` we fetch
+  // that same full-stack file from main — NOT the repo-root docker-compose.yml,
+  // which only defines proxy+dind for bare `bun dev` and has no app service.
   const url =
     version === "dev"
-      ? `https://raw.githubusercontent.com/${REPO}/main/${COMPOSE_ASSET}`
+      ? `https://raw.githubusercontent.com/${REPO}/main/docker-compose.full.yml`
       : `https://github.com/${REPO}/releases/download/${version}/${COMPOSE_ASSET}`;
 
   const res = await fetch(url);
   if (!res.ok) {
     throw new Error(
-      `Failed to fetch ${COMPOSE_ASSET} from ${url}: ${res.status} ${res.statusText}`,
+      `Failed to fetch compose file from ${url}: ${res.status} ${res.statusText}`,
     );
   }
   return await res.text();
 }
 
+/** Sidecar recording which VERSION the local compose file was fetched for. */
+function composeVersionFile(composeFile: string): string {
+  return `${composeFile}.version`;
+}
+
+function readComposeVersion(composeFile: string): string | null {
+  try {
+    return fs.readFileSync(composeVersionFile(composeFile), "utf-8").trim();
+  } catch {
+    return null;
+  }
+}
+
 async function ensureComposeFile(opts: { force?: boolean } = {}): Promise<string> {
   const { composeFile } = paths();
-  if (!opts.force && fs.existsSync(composeFile)) return composeFile;
+  const exists = fs.existsSync(composeFile);
+  // A compose file written by an older binary (or with no version marker) is
+  // treated as stale so upgrades don't silently keep running the old topology.
+  const stale = exists && readComposeVersion(composeFile) !== VERSION;
 
-  console.log(`Fetching ${COMPOSE_ASSET} for ${VERSION}...`);
-  const body = await fetchCompose(VERSION);
-  fs.writeFileSync(composeFile, body);
-  console.log(`Wrote ${composeFile}`);
+  if (!opts.force && exists && !stale) return composeFile;
+
+  if (stale) {
+    console.log(
+      `Compose file is from a different version (${readComposeVersion(composeFile) ?? "unknown"} → ${VERSION}); refreshing...`,
+    );
+  } else {
+    console.log(`Fetching ${COMPOSE_ASSET} for ${VERSION}...`);
+  }
+
+  try {
+    const body = await fetchCompose(VERSION);
+    fs.writeFileSync(composeFile, body);
+    fs.writeFileSync(composeVersionFile(composeFile), VERSION);
+    console.log(`Wrote ${composeFile}`);
+  } catch (err) {
+    // Don't strand a working install if we're offline — reuse what we have.
+    if (exists) {
+      console.warn(
+        `Warning: could not refresh compose file (${err instanceof Error ? err.message : String(err)}). Using existing ${composeFile}.`,
+      );
+      return composeFile;
+    }
+    throw err;
+  }
   return composeFile;
 }
 

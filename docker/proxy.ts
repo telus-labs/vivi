@@ -19,7 +19,15 @@ import https from "node:https";
 import net from "node:net";
 import tls from "node:tls";
 import fs from "node:fs";
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
+
+// RFC 1123 hostname (labels of [A-Za-z0-9-], dot-separated). Anything else is
+// rejected before it can reach an openssl invocation or a generated cert.
+const VALID_HOSTNAME = /^(?=.{1,253}$)([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/;
+
+export function isValidHostname(hostname: string): boolean {
+  return VALID_HOSTNAME.test(hostname);
+}
 
 // --- Config ---
 
@@ -136,9 +144,15 @@ loadSecrets();
 loadAllowlist();
 loadGitPolicy();
 loadCA();
-try { fs.watchFile(SECRETS_FILE, { interval: 1000 }, loadSecrets); } catch {}
-try { fs.watchFile(ALLOWLIST_FILE, { interval: 1000 }, loadAllowlist); } catch {}
-try { fs.watchFile(GIT_POLICY_FILE, { interval: 1000 }, loadGitPolicy); } catch {}
+// Guard live side effects so the module can be imported by unit tests without
+// binding a port or leaving polling watchers on the event loop.
+const IS_TEST = !!process.env.VITEST;
+
+if (!IS_TEST) {
+  try { fs.watchFile(SECRETS_FILE, { interval: 1000 }, loadSecrets); } catch {}
+  try { fs.watchFile(ALLOWLIST_FILE, { interval: 1000 }, loadAllowlist); } catch {}
+  try { fs.watchFile(GIT_POLICY_FILE, { interval: 1000 }, loadGitPolicy); } catch {}
+}
 
 // --- Helpers ---
 
@@ -172,6 +186,12 @@ function getCertForHost(hostname: string): { key: Buffer; cert: Buffer } | null 
 
   if (!caCert || !caKey) return null;
 
+  // Never interpolate an unvalidated hostname into a filename, -subj, or SAN.
+  if (!isValidHostname(hostname)) {
+    log("WARN", `Refusing to mint cert for invalid hostname: ${hostname}`);
+    return null;
+  }
+
   const t0 = performance.now();
   try {
     const prefix = `/tmp/mitm-${hostname}-${Date.now()}`;
@@ -180,13 +200,14 @@ function getCertForHost(hostname: string): { key: Buffer; cert: Buffer } | null 
     const certPath = `${prefix}.crt`;
     const extPath = `${prefix}.ext`;
 
+    const quiet = { stdio: "ignore" as const };
     fs.writeFileSync(extPath, `subjectAltName=DNS:${hostname}\n`);
-    execSync(`openssl genrsa -out ${keyPath} 2048 2>/dev/null`);
-    execSync(`openssl req -new -key ${keyPath} -out ${csrPath} -subj "/CN=${hostname}" 2>/dev/null`);
-    execSync(
-      `openssl x509 -req -in ${csrPath} -CA ${CA_CERT_FILE} -CAkey ${CA_KEY_FILE} ` +
-      `-CAcreateserial -out ${certPath} -days 30 -extfile ${extPath} 2>/dev/null`
-    );
+    execFileSync("openssl", ["genrsa", "-out", keyPath, "2048"], quiet);
+    execFileSync("openssl", ["req", "-new", "-key", keyPath, "-out", csrPath, "-subj", `/CN=${hostname}`], quiet);
+    execFileSync("openssl", [
+      "x509", "-req", "-in", csrPath, "-CA", CA_CERT_FILE, "-CAkey", CA_KEY_FILE,
+      "-CAcreateserial", "-out", certPath, "-days", "30", "-extfile", extPath,
+    ], quiet);
 
     const result = {
       key: fs.readFileSync(keyPath),
@@ -311,7 +332,7 @@ function isPrCreationRequest(method: string, urlPath: string): boolean {
 // can read and comment on the issue it's working on, but `gh repo delete`,
 // release management, secret/key writes, and similar destructive calls
 // will reach GitHub unauthenticated and 401.
-function isSafeGitHubApiRequest(method: string, urlPath: string): boolean {
+export function isSafeGitHubApiRequest(method: string, urlPath: string): boolean {
   const m = method.toUpperCase();
   if (m === "GET" || m === "HEAD") return true;
   // POST /repos/:o/:r/issues/:n/comments — issue and PR comments share this
@@ -718,10 +739,20 @@ server.on("connect", (req: http.IncomingMessage, clientSocket: net.Socket, head:
             log("GIT-AUTH", `Injected gh token for ${method} ${hostname}${urlPath}`);
           }
         } else {
-          // Strip any placeholder/leaked credential so GitHub 401s the
-          // destructive call instead of honoring an injected token.
-          delete headers.authorization;
-          log("GIT-AUTH-DENY", `Refused token injection for ${method} ${hostname}${urlPath}`);
+          // Destructive / out-of-policy GitHub write. Don't forward it
+          // unauthenticated (that yields an opaque GitHub 401); reject it here
+          // with an explanation so the agent knows policy — not GitHub — blocked it.
+          log("GIT-AUTH-DENY", `Blocked out-of-policy GitHub write: ${method} ${hostname}${urlPath}`);
+          const msg = JSON.stringify({
+            message:
+              `Blocked by Vivi git policy: ${method} ${urlPath} is not permitted from the sandbox. ` +
+              `Reads, issue/PR comments, and PR creation are allowed; other writes (releases, repo/secret ` +
+              `management, deletions) are denied. Adjust git-policy.json on the host to change this.`,
+            documentation_url: "https://github.com/telus-oss/vivi#git-workflow",
+          });
+          mitmRes.writeHead(403, { "Content-Type": "application/json" });
+          mitmRes.end(msg);
+          return;
         }
       } else if (!headers.authorization) {
         // Git HTTP uses Basic auth — only inject for smart-HTTP endpoints
@@ -821,8 +852,10 @@ process.on("unhandledRejection", (reason) => {
 
 // --- Start ---
 
-server.listen(PORT, "0.0.0.0", () => {
-  log("READY", `Proxy listening on :${PORT}`);
-  log("READY", `Git hosts: ${gitPolicy.gitHosts.join(", ")}`);
-  log("READY", `Host server: ${HOST_SERVER}`);
-});
+if (!IS_TEST) {
+  server.listen(PORT, "0.0.0.0", () => {
+    log("READY", `Proxy listening on :${PORT}`);
+    log("READY", `Git hosts: ${gitPolicy.gitHosts.join(", ")}`);
+    log("READY", `Host server: ${HOST_SERVER}`);
+  });
+}

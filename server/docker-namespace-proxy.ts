@@ -6,15 +6,27 @@
  * so the sandbox can run docker commands without direct access to the dind daemon.
  *
  * The proxy enforces session namespacing:
- *   - POST /containers/create  → injects vivi.session=<id> label, blocks --privileged
- *   - GET  /containers/json    → rewrites URL to add ?filters={"label":["vivi.session=<id>"]}
- *   - Everything else          → piped through unchanged
+ *   - POST /containers/create        → injects vivi.session=<id> label; rejects
+ *                                       escape-prone HostConfig (see validateHostConfig)
+ *   - GET  /containers/json          → scopes the list to this session's label
+ *   - /containers/<id>/* and DELETE  → verified to belong to this session before
+ *     /containers/<id>                forwarding (defense-in-depth if an id leaks)
+ *   - Everything else                → piped through unchanged
  *
  * Security model: the sandbox network is internal (no internet access), so sandbox
  * containers cannot reach dind directly — they can only speak Docker through this proxy.
+ *
+ * Egress: every nested container gets HTTP(S)_PROXY pointing at the in-dind relay
+ * (see docker/dind-entrypoint.sh) injected at create time, and the dind egress
+ * firewall drops any direct public traffic — so containers the agent launches are
+ * constrained by the same allowlist as the sandbox, with no bypass.
+ *
+ * Known shared surface (single dind daemon): the image cache and any agent-created
+ * volumes/networks are not namespaced per session.
  */
 
 import net from "node:net";
+import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { execSync, exec, spawn, type ChildProcess } from "node:child_process";
@@ -28,7 +40,14 @@ const execAsync = promisify(exec);
 // (e.g. compose), DIND is reachable via its service hostname, not on the
 // app's loopback. Allow the compose file / operator to override.
 const DIND_HOST = process.env.DIND_HOST || "127.0.0.1";
-const DIND_PORT = 2375;
+const DIND_PORT = Number(process.env.DIND_PORT) || 2375;
+
+// Address nested containers use to reach the proxy relay running inside dind.
+// The default docker0 gateway (172.17.0.1) is a dind-local address routable from
+// any nested bridge; override if dind uses a non-default bridge subnet.
+const DIND_CONTAINER_PROXY = process.env.DIND_CONTAINER_PROXY || "http://172.17.0.1:7443";
+const NESTED_NO_PROXY = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16";
+const PROXY_ENV_KEYS = ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY", "no_proxy"];
 const SOCKET_DIR = paths().socketsDir;
 export const SESSION_LABEL = "vivi.session";
 
@@ -242,6 +261,162 @@ export async function streamContainerLogs(
 }
 
 // ---------------------------------------------------------------------------
+// HostConfig validation — reject container creates that could escape the
+// dind boundary or escalate to the dind daemon itself.
+// ---------------------------------------------------------------------------
+
+// Bind/mount sources that hand a nested container control of the daemon or the
+// dind host filesystem. Mounting the docker socket is a full escape (the nested
+// container talks to dind directly, bypassing this proxy).
+const FORBIDDEN_MOUNT_SOURCES = [
+  /docker\.sock$/i,
+  /^\/var\/run(\/|$)/,
+  /^\/run(\/|$)/,
+  /^\/proc(\/|$)/,
+  /^\/sys(\/|$)/,
+  /^\/dev(\/|$)/,
+  /^\/var\/lib\/docker(\/|$)/,
+  /^\/etc(\/|$)/,
+  /^\/$/,
+];
+
+function isForbiddenMountSource(src: string): boolean {
+  const s = (src || "").trim();
+  if (!s) return false;
+  return FORBIDDEN_MOUNT_SOURCES.some((re) => re.test(s));
+}
+
+export interface HostConfigVerdict {
+  allowed: boolean;
+  reason?: string;
+}
+
+/**
+ * Decide whether a `POST /containers/create` body is safe to run inside the
+ * shared dind daemon. Default-deny on the known escape/escalation vectors;
+ * everything else (ordinary images, named volumes, port maps) is allowed.
+ */
+export function validateHostConfig(bodyObj: any): HostConfigVerdict {
+  const hc = bodyObj?.HostConfig ?? {};
+
+  if (hc.Privileged) return { allowed: false, reason: "privileged containers are not allowed" };
+  if (Array.isArray(hc.CapAdd) && hc.CapAdd.length > 0)
+    return { allowed: false, reason: "adding Linux capabilities (--cap-add) is not allowed" };
+  if (Array.isArray(hc.Devices) && hc.Devices.length > 0)
+    return { allowed: false, reason: "device passthrough (--device) is not allowed" };
+
+  for (const mode of ["PidMode", "NetworkMode", "IpcMode", "UTSMode", "UsernsMode", "CgroupnsMode"] as const) {
+    const v = hc[mode];
+    if (typeof v === "string" && (v === "host" || v.startsWith("host:")))
+      return { allowed: false, reason: `${mode}=host is not allowed` };
+  }
+
+  if (Array.isArray(hc.SecurityOpt)) {
+    for (const opt of hc.SecurityOpt) {
+      const o = String(opt).toLowerCase().replace(/\s/g, "");
+      if (o.includes("seccomp=unconfined") || o.includes("apparmor=unconfined") ||
+          o.includes("systempaths=unconfined") || o === "label=disable")
+        return { allowed: false, reason: `security-opt "${opt}" is not allowed` };
+    }
+  }
+
+  // Legacy string binds: "src:dst[:opts]"
+  if (Array.isArray(hc.Binds)) {
+    for (const bind of hc.Binds) {
+      const src = String(bind).split(":")[0];
+      if (isForbiddenMountSource(src))
+        return { allowed: false, reason: `bind mount of "${src}" is not allowed` };
+    }
+  }
+
+  // Newer Mounts API: [{ Type, Source, Target }]
+  if (Array.isArray(hc.Mounts)) {
+    for (const m of hc.Mounts) {
+      if ((m?.Type === "bind" || !m?.Type) && isForbiddenMountSource(m?.Source))
+        return { allowed: false, reason: `bind mount of "${m?.Source}" is not allowed` };
+    }
+  }
+
+  return { allowed: true };
+}
+
+/**
+ * Build the container Env array with proxy vars forced to the in-dind relay.
+ * Strips any caller-supplied proxy vars first so the agent can't point egress
+ * elsewhere (the dind firewall blocks direct egress regardless; this just makes
+ * the supported path work out of the box for cooperative tooling).
+ */
+export function buildNestedContainerEnv(existingEnv: unknown, proxyUrl: string): string[] {
+  const kept = (Array.isArray(existingEnv) ? existingEnv : [])
+    .map((e) => String(e))
+    .filter((e) => !PROXY_ENV_KEYS.some((k) => e.startsWith(`${k}=`)));
+  return [
+    ...kept,
+    `HTTP_PROXY=${proxyUrl}`,
+    `HTTPS_PROXY=${proxyUrl}`,
+    `http_proxy=${proxyUrl}`,
+    `https_proxy=${proxyUrl}`,
+    `NO_PROXY=${NESTED_NO_PROXY}`,
+    `no_proxy=${NESTED_NO_PROXY}`,
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// Per-container endpoint namespacing
+// ---------------------------------------------------------------------------
+
+// Matches /v1.43/containers/<id>/<op> and bare /v1.43/containers/<id>.
+// Returns the <id> for ownership-checked ops, or null for collection endpoints
+// (create/json/prune) and non-container paths.
+const CONTAINER_SCOPED_RE = /^\/v[\d.]+\/containers\/([^/?]+)(?:\/[^?]*)?(?:\?.*)?$/;
+const CONTAINER_COLLECTION_IDS = new Set(["create", "json", "prune"]);
+
+export function parseContainerScopedId(urlPath: string): string | null {
+  const m = CONTAINER_SCOPED_RE.exec(urlPath);
+  if (!m) return null;
+  const id = decodeURIComponent(m[1]);
+  if (CONTAINER_COLLECTION_IDS.has(id)) return null;
+  return id;
+}
+
+/**
+ * Look up the vivi.session label of a dind container by id/name.
+ * Returns the label value, or null if the container is missing/unlabeled/unreachable.
+ */
+function lookupContainerSession(id: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    const safeId = encodeURIComponent(id);
+    const req = http.get(
+      { host: DIND_HOST, port: DIND_PORT, path: `/containers/${safeId}/json`, timeout: 5_000 },
+      (res) => {
+        if (res.statusCode !== 200) { res.resume(); resolve(null); return; }
+        let data = "";
+        res.setEncoding("utf-8");
+        res.on("data", (c) => { data += c; });
+        res.on("end", () => {
+          try {
+            const info = JSON.parse(data);
+            resolve(info?.Config?.Labels?.[SESSION_LABEL] ?? null);
+          } catch { resolve(null); }
+        });
+      },
+    );
+    req.on("error", () => resolve(null));
+    req.on("timeout", () => { req.destroy(); resolve(null); });
+  });
+}
+
+function denyRequest(client: net.Socket, upstream: net.Socket, status: number, message: string): void {
+  const body = JSON.stringify({ message });
+  client.write(
+    `HTTP/1.1 ${status} ${status === 403 ? "Forbidden" : "Error"}\r\n` +
+    `Content-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`,
+  );
+  client.end();
+  upstream.destroy();
+}
+
+// ---------------------------------------------------------------------------
 // Connection handler
 // ---------------------------------------------------------------------------
 
@@ -277,6 +452,11 @@ function handleConnection(client: net.Socket, sessionId: string): void {
       const method = firstLine.slice(0, spaceIdx).toUpperCase();
       const urlPath = firstLine.slice(spaceIdx + 1, firstLine.lastIndexOf(" "));
 
+      const scopedId =
+        method !== "POST" || !/^\/v[\d.]+\/containers\/create/.test(urlPath)
+          ? parseContainerScopedId(urlPath)
+          : null;
+
       if (method === "POST" && /^\/v[\d.]+\/containers\/create/.test(urlPath)) {
         interceptContainerCreate(client, upstream, listenForNextRequest, lines, rest, sessionId);
       } else if (method === "GET" && /^\/v[\d.]+\/containers\/json/.test(urlPath)) {
@@ -286,6 +466,8 @@ function handleConnection(client: net.Socket, sessionId: string): void {
         upstream.write(newHeader);
         // GET has no request body — continue listening with leftover data
         listenForNextRequest(rest.length ? rest : undefined);
+      } else if (scopedId !== null) {
+        handleContainerScoped(client, upstream, listenForNextRequest, lines, rest, sessionId, scopedId);
       } else {
         // Non-intercepted request — forward headers and consume body (if any)
         // before re-entering listen mode for the next request.
@@ -372,19 +554,20 @@ function interceptContainerCreate(
       return;
     }
 
-    // Block --privileged containers inside the sandbox
-    if (bodyObj.HostConfig?.Privileged) {
-      const msg = JSON.stringify({ message: "privileged containers are not allowed in the Vivi sandbox" });
-      client.write(
-        `HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(msg)}\r\n\r\n${msg}`,
-      );
-      client.end();
-      upstream.destroy();
+    // Reject escape-prone container configs (privileged, host namespaces,
+    // capability/device passthrough, docker-socket and host-path mounts, …).
+    const verdict = validateHostConfig(bodyObj);
+    if (!verdict.allowed) {
+      denyRequest(client, upstream, 403, `${verdict.reason} in the Vivi sandbox`);
       return;
     }
 
     // Inject session label
     bodyObj.Labels = { ...(bodyObj.Labels ?? {}), [SESSION_LABEL]: sessionId };
+
+    // Force egress through the in-dind proxy relay (paired with the dind egress
+    // firewall — see docker/dind-entrypoint.sh).
+    bodyObj.Env = buildNestedContainerEnv(bodyObj.Env, DIND_CONTAINER_PROXY);
 
     const newBodyBuf = Buffer.from(JSON.stringify(bodyObj));
     const newHeaderSection = headerLines
@@ -405,6 +588,62 @@ function interceptContainerCreate(
 
   client.on("data", bodyListener);
   tryIntercept();
+}
+
+/**
+ * Forward a request targeting a specific container only if that container
+ * belongs to this session. Buffers incoming bytes during the async ownership
+ * check so no body data is lost, then either forwards header+body or rejects.
+ */
+function handleContainerScoped(
+  client: net.Socket,
+  upstream: net.Socket,
+  onDone: (leftover?: Buffer) => void,
+  headerLines: string[],
+  rest: Buffer,
+  sessionId: string,
+  containerId: string,
+): void {
+  // No data listener is attached right now (the header listener removed itself),
+  // so buffer anything that arrives while we await the ownership lookup.
+  let buffered = rest;
+  const buffering = (chunk: Buffer) => { buffered = Buffer.concat([buffered, chunk]); };
+  client.on("data", buffering);
+
+  lookupContainerSession(containerId)
+    .then((owner) => {
+      client.removeListener("data", buffering);
+
+      if (owner !== sessionId) {
+        denyRequest(client, upstream, 403,
+          "container does not belong to this session (or does not exist)");
+        return;
+      }
+
+      // Owned — forward the original headers unchanged.
+      upstream.write(Buffer.from(headerLines.join("\r\n") + "\r\n\r\n"));
+
+      const isChunked = headerLines.some((l) => /^transfer-encoding:\s*chunked/i.test(l));
+      if (isChunked) {
+        // Body length is unknown; forward what we have and raw-pipe the rest of
+        // this connection. Safe: every byte belongs to an owned container.
+        if (buffered.length) upstream.write(buffered);
+        client.on("data", (c: Buffer) => { upstream.write(c); });
+        return;
+      }
+
+      const clLine = headerLines.find((l) => /^content-length:/i.test(l));
+      const contentLength = clLine ? parseInt(clLine.split(":")[1].trim(), 10) : 0;
+      if (contentLength === 0) {
+        onDone(buffered.length ? buffered : undefined);
+      } else {
+        forwardBodyThenListen(client, upstream, buffered, contentLength, onDone);
+      }
+    })
+    .catch(() => {
+      client.removeListener("data", buffering);
+      denyRequest(client, upstream, 502, "ownership check failed");
+    });
 }
 
 function injectLabelFilter(urlPath: string, label: string): string {

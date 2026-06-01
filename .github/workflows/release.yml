@@ -4,6 +4,7 @@ name: release
 #   - ghcr.io/OWNER/vivi-app    linux/amd64 + linux/arm64
 #   - ghcr.io/OWNER/vivi-proxy  linux/amd64 + linux/arm64
 #   - ghcr.io/OWNER/vivi-sandbox linux/amd64 + linux/arm64
+#   - ghcr.io/OWNER/vivi-dind   linux/amd64 + linux/arm64
 #   - vivi CLI binaries for linux x64/arm64, macos arm64/intel, windows x64
 #   - docker-compose.yml + SHA256SUMS as release assets
 #
@@ -41,7 +42,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [app, proxy, sandbox]
+        target: [app, proxy, sandbox, dind]
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

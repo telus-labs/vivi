@@ -14,15 +14,22 @@ You (browser) ──── REST + WebSocket ────► Vivi server (Express
                                    │  • git + gh + Docker CLI         │
                                    │  • git daemon for push/pull      │
                                    │                                  │
-                                   │  MITM Proxy ◄──── all traffic    │
+                                   │  MITM Proxy ◄─ all egress        │
                                    │  • injects API keys              │
                                    │  • intercepts git push           │
                                    │  • enforces allowlist            │
-                                   │                                  │
-                                   │  DinD daemon (shared)            │
+                                   │        ▲                         │
+                                   │  DinD daemon (shared) ───────────┘
                                    │  • per-session socket proxies    │
+                                   │  • egress firewall → proxy relay │
                                    └──────────────────────────────────┘
 ```
+
+> Both the sandbox process **and** containers it launches in DinD egress through
+> the MITM proxy: DinD drops direct public traffic and forwards a relay to the
+> proxy, and the per-session socket proxy injects the proxy env into every nested
+> container. The shared DinD image cache and agent-created volumes/networks are
+> not namespaced per session.
 
 ## Components
 
@@ -122,10 +129,19 @@ React + Vite SPA with a multi-tab session interface.
 | Layer | Enforcement |
 |-------|-------------|
 | Git bundle | Only tracked files enter the sandbox |
-| Internal Docker network | Sandbox has no direct internet access |
-| MITM proxy | All HTTPS traffic inspected; allowlist enforced |
+| Internal Docker network | Sandbox process has no direct internet access |
+| MITM proxy | HTTPS inspected; allowlist enforced |
+| DinD egress lockdown | Nested containers' direct public egress is firewalled; forced through the proxy relay (`docker/dind-entrypoint.sh`) |
 | Credential proxy | Real keys exist only in the proxy process |
-| Docker namespace proxy | Per-session socket prevents container escape |
+| Docker namespace proxy | Per-session ownership checks + create-time escape/escalation denial (`validateHostConfig`) + proxy-env injection |
 | Rate limiting | `express-rate-limit` on expensive endpoints |
-| Shell injection prevention | `execFileSync` with argument arrays, no shell interpolation |
+| Shell injection prevention | `execFileSync`/arg-array invocation; MITM cert hostnames validated before use |
 | Path traversal prevention | `path.resolve()` + prefix validation on all file access |
+
+The shared DinD daemon's image cache and agent-created volumes/networks are not
+namespaced per session — a known trade-off of one DinD daemon for all sessions.
+
+**Boundaries this does _not_ cover** (see [infra-limitations.md](infra-limitations.md)):
+containers the agent launches in the shared DinD daemon have unproxied internet
+egress; the DinD daemon, its image cache, and agent-created volumes/networks are
+shared across sessions with no per-session quota.

@@ -100,16 +100,11 @@ describe("getPrDiff", () => {
     expect(mockExecSync).not.toHaveBeenCalled();
   });
 
-  it("handles branch names with special characters safely", () => {
-    const pr = seedPr({ branch: "feat/$(whoami)", baseBranch: "main" });
-    mockExecFileSync.mockReturnValue("");
-
-    getPrDiff(pr.id);
-
-    // The branch name is passed as a separate array element, not interpolated into a shell string
-    const args = mockExecFileSync.mock.calls[0][1];
-    expect(args).toContain("main...feat/$(whoami)");
-    // Because it's an array arg, the shell never interprets $(whoami)
+  it("rejects branch/base refs with shell or option-injection metacharacters", () => {
+    expect(() => seedPr({ branch: "feat/$(whoami)", baseBranch: "main" })).toThrow(/Invalid branch/);
+    expect(() => seedPr({ branch: "--upload-pack=touch /tmp/x", baseBranch: "main" })).toThrow(/Invalid branch/);
+    expect(() => seedPr({ branch: "ok", baseBranch: "-flag" })).toThrow(/Invalid baseBranch/);
+    expect(mockExecFileSync).not.toHaveBeenCalled();
   });
 
   it("throws for unknown PR id", () => {

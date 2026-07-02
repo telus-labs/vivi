@@ -49,6 +49,7 @@ beforeAll(async () => {
       });
       return;
     }
+    req.resume(); // drain any body (e.g. a chunked archive PUT) before responding
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end("{}");
   });
@@ -137,5 +138,46 @@ describe("per-session docker proxy (wire)", () => {
   it("blocks a container op for a non-existent container", async () => {
     const res = await request(httpRequest("GET", "/v1.43/containers/ghost/json"));
     expect(res).toMatch(/^HTTP\/1\.1 403/);
+  });
+
+  it("intercepts an UNVERSIONED privileged create (no version-prefix bypass)", async () => {
+    const res = await request(httpRequest("POST", "/containers/create",
+      JSON.stringify({ Image: "x", HostConfig: { Privileged: true } })));
+    expect(res).toMatch(/^HTTP\/1\.1 403/);
+    expect(res).toMatch(/privileged/i);
+  });
+
+  it("ownership-checks an UNVERSIONED container op", async () => {
+    const owned = await request(httpRequest("GET", "/containers/ownedById/json"));
+    expect(owned).toMatch(/^HTTP\/1\.1 200/);
+    const other = await request(httpRequest("GET", "/containers/otherSession/json"));
+    expect(other).toMatch(/^HTTP\/1\.1 403/);
+  });
+
+  it("denies an unknown endpoint (default-deny) instead of passing it through", async () => {
+    const res = await request(httpRequest("GET", "/v1.43/swarm"));
+    expect(res).toMatch(/^HTTP\/1\.1 403/);
+  });
+
+  it("still validates a request pipelined after a chunked one on the same socket", async () => {
+    // Chunked op to an owned container (passes ownership), then a pipelined
+    // privileged create on the same keep-alive connection. The create must be
+    // classified and denied — not raw-piped to dind.
+    const chunked = [
+      "PUT /v1.43/containers/ownedById/archive?path=/tmp HTTP/1.1",
+      "Host: docker",
+      "Content-Type: application/x-tar",
+      "Transfer-Encoding: chunked",
+      "",
+      "5\r\nhello\r\n0\r\n\r\n",
+    ].join("\r\n");
+    const create = httpRequest("POST", "/v1.43/containers/create",
+      JSON.stringify({ Image: "x", HostConfig: { Privileged: true } }));
+
+    const res = await request(chunked + create);
+    // The pipelined create is classified and denied — proving the chunked body was
+    // framed and we re-entered the parser, rather than raw-piping the rest.
+    expect(res).toMatch(/^HTTP\/1\.1 403/);
+    expect(res).toMatch(/privileged/i);
   });
 });

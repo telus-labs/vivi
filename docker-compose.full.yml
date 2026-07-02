@@ -38,6 +38,8 @@ services:
       # DIND lives on the same user-defined bridge; reach it by service name
       # (the app's own loopback isn't the host's loopback).
       - DIND_HOST=dind
+      # Shared secret the proxy attaches to sandbox→host calls; must match proxy's.
+      - VIVI_INTERNAL_TOKEN=${VIVI_INTERNAL_TOKEN:-}
     volumes:
       - ${VIVI_DATA_DIR}:/app/data
       - ${VIVI_CONFIG_DIR}:/app/config
@@ -60,6 +62,8 @@ services:
       # `vivi start --host` mode can override this to host.docker.internal:<port>
       # so the proxy reaches a server running natively on the host.
       - HOST_SERVER=${HOST_SERVER:-app:7700}
+      # Shared secret attached to sandbox→host calls; must match the app's.
+      - VIVI_INTERNAL_TOKEN=${VIVI_INTERNAL_TOKEN:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

@@ -92,8 +92,45 @@ const app = express();
 // Trust one proxy hop so express-rate-limit uses that IP for keying and doesn't
 // throw ERR_ERL_UNEXPECTED_X_FORWARDED_FOR on every request.
 app.set("trust proxy", 1);
-app.use(cors());
+
+// Restrict CORS to same-origin and known dev origins. Reflecting any origin
+// (the cors() default) lets drive-by sites make credentialed reads of the API.
+const STATIC_ALLOWED_ORIGINS = new Set([
+  "http://localhost:5173", "http://127.0.0.1:5173", // vite dev server
+  `http://localhost:${PORT}`, `http://127.0.0.1:${PORT}`, // backend direct
+]);
+app.use(cors((req, cb) => {
+  const origin = req.headers.origin;
+  let allowed = false;
+  if (!origin) {
+    allowed = true; // non-browser clients / same-origin requests omit Origin
+  } else if (STATIC_ALLOWED_ORIGINS.has(origin)) {
+    allowed = true;
+  } else {
+    // Same-origin behind any proxy hostname (e.g. cloudflared): Origin host == Host.
+    try { allowed = !!req.headers.host && new URL(origin).host === req.headers.host; } catch {}
+  }
+  cb(null, { origin: allowed, credentials: true });
+}));
 app.use(express.json());
+
+// Shared-secret guard for proxy→host trusted routes. Enforced only when
+// VIVI_INTERNAL_TOKEN is set (identically on the proxy + app services); unset
+// preserves dev behavior. The sandbox never has this token, so this blocks it
+// from reaching credential / sandbox routes even if the proxy allowlist fails.
+const VIVI_INTERNAL_TOKEN = process.env.VIVI_INTERNAL_TOKEN || "";
+if (!VIVI_INTERNAL_TOKEN) {
+  console.warn("[vivi] VIVI_INTERNAL_TOKEN is not set — /api/git/gh-token, /api/git/credentials, and /api/sandbox/* are NOT authenticated. Set it identically on the proxy and app services to enable enforcement.");
+}
+function requireInternalToken(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if (!VIVI_INTERNAL_TOKEN) return next();
+  const provided = Buffer.from(req.get("x-vivi-internal-token") || "");
+  const expected = Buffer.from(VIVI_INTERNAL_TOKEN);
+  if (provided.length !== expected.length || !crypto.timingSafeEqual(provided, expected)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  next();
+}
 
 // --- Health ---
 app.get("/api/config", limiter("health"), (_req, res) => {
@@ -310,8 +347,13 @@ app.patch("/api/secrets/:id", limiter("secrets"), (req, res) => {
     }
   }
   if (baseUrl !== undefined) {
-    if (typeof baseUrl !== "string" || !/^https?:\/\/.+/.test(baseUrl)) {
-      return res.status(400).json({ error: "baseUrl must be a valid http or https URL" });
+    // Require https so a secret's key can't be remapped to a plaintext attacker host.
+    let validHttps = false;
+    if (typeof baseUrl === "string") {
+      try { validHttps = new URL(baseUrl).protocol === "https:"; } catch {}
+    }
+    if (!validHttps) {
+      return res.status(400).json({ error: "baseUrl must be a valid https URL" });
     }
   }
   if (headerName !== undefined) {
@@ -490,7 +532,7 @@ app.put("/api/git/policy", limiter("gitPolicy"), (req, res) => {
 });
 
 // --- Git Credentials (for proxy to call) ---
-app.post("/api/git/credentials", limiter("gitCredentials"), express.text({ type: "*/*" }), (req, res) => {
+app.post("/api/git/credentials", limiter("gitCredentials"), requireInternalToken, express.text({ type: "*/*" }), (req, res) => {
   try {
     const input = typeof req.body === "string" ? req.body : JSON.stringify(req.body);
 
@@ -538,7 +580,7 @@ app.post("/api/git/credentials", limiter("gitCredentials"), express.text({ type:
   }
 });
 
-app.get("/api/git/gh-token", limiter("gitCredentials"), (_req, res) => {
+app.get("/api/git/gh-token", limiter("gitCredentials"), requireInternalToken, (_req, res) => {
   // Prefer Vivi's stored PAT (Secrets tab); fall back to host `gh auth token`.
   // Headless deploys typically don't have gh CLI authenticated, but the user
   // has already configured a PAT via the UI for the GitHub repo picker.
@@ -566,7 +608,7 @@ app.get("/api/pr/:id", limiter("pr"), (req, res) => {
   res.json(p);
 });
 
-app.post("/api/sandbox/request-secret", limiter("sandbox"), (req, res) => {
+app.post("/api/sandbox/request-secret", limiter("sandbox"), requireInternalToken, (req, res) => {
   try {
     const { sessionId, name, envVar, baseUrl, headerName } = req.body;
     if (!name || !envVar || !baseUrl) {
@@ -579,7 +621,7 @@ app.post("/api/sandbox/request-secret", limiter("sandbox"), (req, res) => {
   }
 });
 
-app.post("/api/sandbox/pr", limiter("sandbox"), async (req, res) => {
+app.post("/api/sandbox/pr", limiter("sandbox"), requireInternalToken, async (req, res) => {
   try {
     const { sessionId, ...data } = req.body;
     if (!sessionId) {
@@ -593,7 +635,7 @@ app.post("/api/sandbox/pr", limiter("sandbox"), async (req, res) => {
 });
 
 // --- Git Push interception (from MITM proxy) ---
-app.post("/api/sandbox/git-push", limiter("sandbox"), async (req, res) => {
+app.post("/api/sandbox/git-push", limiter("sandbox"), requireInternalToken, async (req, res) => {
   try {
     const { branch, sessionId } = req.body;
     if (!sessionId) {
@@ -696,7 +738,7 @@ app.get("/api/ports", limiter("ports"), (req, res) => {
   res.json(ports.getOpenPorts(sessionId));
 });
 
-app.post("/api/sandbox/ports", limiter("ports"), (req, res) => {
+app.post("/api/sandbox/ports", limiter("ports"), requireInternalToken, (req, res) => {
   try {
     const { port, sessionId, targetHost, containerName, label, type } = req.body;
     if (!port || typeof port !== "number") {

@@ -30,13 +30,25 @@ if [ "$EGRESS_LOCKDOWN" = "1" ]; then
 
     if iptables -L DOCKER-USER >/dev/null 2>&1; then
       # Insert DROP first (above DinD's default RETURN), then the private-network
-      # RETURNs above it. Final order: RETURN private…, DROP public, RETURN(default).
+      # RETURNs above it. Final order: DROP metadata, RETURN private…, DROP public,
+      # RETURN(default). -I prepends, so insert in reverse of the desired order.
       iptables -C DOCKER-USER -o eth0 -j DROP 2>/dev/null \
         || iptables -I DOCKER-USER -o eth0 -j DROP
       for net in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 127.0.0.0/8 224.0.0.0/4; do
         iptables -C DOCKER-USER -o eth0 -d "$net" -j RETURN 2>/dev/null \
           || iptables -I DOCKER-USER -o eth0 -d "$net" -j RETURN
       done
+      # Cloud metadata endpoint sits inside the permitted 169.254.0.0/16 link-local
+      # range; drop it explicitly above the RETURNs so it can't be reached.
+      iptables -C DOCKER-USER -o eth0 -d 169.254.169.254 -j DROP 2>/dev/null \
+        || iptables -I DOCKER-USER -o eth0 -d 169.254.169.254 -j DROP
+
+      # Nested containers can otherwise reach dockerd at the bridge gateway
+      # (172.17.0.1:2375) via INPUT, which DOCKER-USER (FORWARD) doesn't cover.
+      # Drop daemon traffic arriving on docker0 only; the proxy's connection comes
+      # in on eth0, and the egress relay listens on :7443, so neither is affected.
+      iptables -C INPUT -i docker0 -p tcp --dport 2375 -j DROP 2>/dev/null \
+        || iptables -I INPUT -i docker0 -p tcp --dport 2375 -j DROP
       echo "[dind] nested-container egress lockdown active (proxy-only)"
     else
       echo "[dind] WARNING: DOCKER-USER not found; egress lockdown NOT applied" >&2

@@ -2,9 +2,12 @@
  * GitHub Issues integration — fetches open issues for a repo using the gh CLI.
  */
 
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+
+// Strict GitHub owner/repo identifier charset — rejects shell metacharacters.
+const GH_IDENTIFIER = /^[A-Za-z0-9._-]+$/;
 
 export interface GitHubIssue {
   number: number;
@@ -90,9 +93,19 @@ export function fetchGitHubIssues(repoPath: string): IssuesResult {
     };
   }
 
+  if (!GH_IDENTIFIER.test(parsed.owner) || !GH_IDENTIFIER.test(parsed.repo)) {
+    return {
+      issues: [],
+      repoOwner: parsed.owner,
+      repoName: parsed.repo,
+      error: "Invalid GitHub owner/repo in remote URL",
+    };
+  }
+
   try {
-    const output = execSync(
-      `gh issue list --repo ${parsed.owner}/${parsed.repo} --state open --limit 100 --json number,title,body,state,labels,url,author,createdAt`,
+    const output = execFileSync(
+      "gh",
+      ["issue", "list", "--repo", `${parsed.owner}/${parsed.repo}`, "--state", "open", "--limit", "100", "--json", "number,title,body,state,labels,url,author,createdAt"],
       { encoding: "utf-8", timeout: 15_000 },
     );
     const raw: any[] = JSON.parse(output);

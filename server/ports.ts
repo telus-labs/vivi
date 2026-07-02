@@ -122,6 +122,11 @@ export function openPort(
   label?: string,
   type?: string,
 ): PortForward {
+  // Reject anything but a bare hostname/IP so it can't inject socat address options.
+  if (targetHost && !/^[A-Za-z0-9.-]+$/.test(targetHost)) {
+    throw new Error(`Invalid targetHost: ${targetHost}`);
+  }
+
   const key = makeKey(sessionId, containerPort) + (targetHost ? `:${targetHost}` : "");
 
   // Already forwarded?

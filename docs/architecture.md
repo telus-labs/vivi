@@ -131,11 +131,14 @@ React + Vite SPA with a multi-tab session interface.
 | Git bundle | Only tracked files enter the sandbox |
 | Internal Docker network | Sandbox process has no direct internet access |
 | MITM proxy | HTTPS inspected; allowlist enforced |
-| DinD egress lockdown | Nested containers' direct public egress is firewalled; forced through the proxy relay (`docker/dind-entrypoint.sh`) |
+| Sandbox→host route lockdown | The proxy's `vivi.internal` route only forwards `/api/sandbox/*` (traversal/encoding-normalized); credential, secrets, allowlist, git-policy, and updater endpoints are unreachable from the sandbox |
+| Internal API token | Proxy attaches `x-vivi-internal-token` (from `VIVI_INTERNAL_TOKEN`) to sandbox→host calls; the app enforces it on credential + `/api/sandbox/*` routes (constant-time compare). Set identically on the proxy and app services; the CLI generates and persists it automatically |
+| Browser boundary | CORS restricted to same-origin + dev origins; WebSocket upgrades reject cross-origin |
+| DinD egress lockdown | Nested containers' direct public egress is firewalled and forced through the proxy relay; the DinD daemon port is blocked on the container bridge (INPUT) and the cloud-metadata IP is dropped (`docker/dind-entrypoint.sh`) |
 | Credential proxy | Real keys exist only in the proxy process |
-| Docker namespace proxy | Per-session ownership checks + create-time escape/escalation denial (`validateHostConfig`) + proxy-env injection |
+| Docker namespace proxy | Default-deny request classification (unknown/unversioned paths rejected, not passed through), per-session ownership checks on containers **and** exec (versioned or not), chunked bodies framed + re-validated, create-time escape/escalation denial (`validateHostConfig`) |
 | Rate limiting | `express-rate-limit` on expensive endpoints |
-| Shell injection prevention | `execFileSync`/arg-array invocation; MITM cert hostnames validated before use |
+| Shell injection prevention | `execFileSync`/arg-array invocation; MITM cert hostnames, GitHub owner/repo, port-forward targets, and git refs validated before use |
 | Path traversal prevention | `path.resolve()` + prefix validation on all file access |
 
 The shared DinD daemon's image cache and agent-created volumes/networks are not

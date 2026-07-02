@@ -18,6 +18,8 @@
  */
 
 import fs from "node:fs";
+import path from "node:path";
+import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { paths } from "../server/paths.js";
 
@@ -130,6 +132,25 @@ async function ensureComposeFile(opts: { force?: boolean } = {}): Promise<string
   return composeFile;
 }
 
+/**
+ * Shared secret the proxy attaches to sandbox→host calls and the app validates,
+ * so the untrusted sandbox can't reach credential/sandbox endpoints directly.
+ * Persisted so app and proxy stay in sync across restarts.
+ */
+function getOrCreateInternalToken(): string {
+  const tokenFile = path.join(paths().dataDir, "internal-token");
+  try {
+    const existing = fs.readFileSync(tokenFile, "utf-8").trim();
+    if (existing) return existing;
+  } catch {
+    // not created yet
+  }
+  const token = crypto.randomBytes(32).toString("hex");
+  fs.mkdirSync(path.dirname(tokenFile), { recursive: true });
+  fs.writeFileSync(tokenFile, token, { mode: 0o600 });
+  return token;
+}
+
 function composeEnv(): Record<string, string> {
   const p = paths();
   return {
@@ -139,6 +160,7 @@ function composeEnv(): Record<string, string> {
     // Host-side path for bind-mounts the app container will hand back to the
     // host Docker daemon when launching sandbox containers.
     HOST_DATA_DIR: p.dataDir,
+    VIVI_INTERNAL_TOKEN: getOrCreateInternalToken(),
   };
 }
 

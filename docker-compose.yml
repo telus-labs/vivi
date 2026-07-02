@@ -14,6 +14,11 @@ services:
     networks:
       - sandbox
       - default
+    environment:
+      # Shared secret attached to sandbox→host calls; the app enforces it when
+      # set. Inherited from the server process env in dev (unset ⇒ not enforced;
+      # the vivi.internal path allowlist protects credentials regardless).
+      VIVI_INTERNAL_TOKEN: "${VIVI_INTERNAL_TOKEN:-}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

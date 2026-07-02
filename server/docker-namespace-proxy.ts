@@ -5,13 +5,17 @@
  * That socket is bind-mounted into the sandbox container as /var/run/docker.sock,
  * so the sandbox can run docker commands without direct access to the dind daemon.
  *
- * The proxy enforces session namespacing:
+ * The proxy enforces session namespacing (default-deny: every request is
+ * positively classified, and anything unrecognized is rejected — never forwarded
+ * raw). Version-prefixed and unversioned Engine API paths are treated identically:
  *   - POST /containers/create        → injects vivi.session=<id> label; rejects
  *                                       escape-prone HostConfig (see validateHostConfig)
  *   - GET  /containers/json          → scopes the list to this session's label
  *   - /containers/<id>/* and DELETE  → verified to belong to this session before
- *     /containers/<id>                forwarding (defense-in-depth if an id leaks)
- *   - Everything else                → piped through unchanged
+ *     /containers/<id>, /exec/<id>/*   forwarding (defense-in-depth if an id leaks)
+ *   - known-safe endpoints           → forwarded (images, build, volumes, networks,
+ *                                       version/ping/info/events, …)
+ *   - everything else                → denied 403
  *
  * Security model: the sandbox network is internal (no internet access), so sandbox
  * containers cannot reach dind directly — they can only speak Docker through this proxy.
@@ -365,10 +369,15 @@ export function buildNestedContainerEnv(existingEnv: unknown, proxyUrl: string):
 // Per-container endpoint namespacing
 // ---------------------------------------------------------------------------
 
-// Matches /v1.43/containers/<id>/<op> and bare /v1.43/containers/<id>.
-// Returns the <id> for ownership-checked ops, or null for collection endpoints
-// (create/json/prune) and non-container paths.
-const CONTAINER_SCOPED_RE = /^\/v[\d.]+\/containers\/([^/?]+)(?:\/[^?]*)?(?:\?.*)?$/;
+// Optional Docker API version prefix ("/v1.43", "/v1.43.0"). The Engine API accepts
+// requests with or without it, so classifiers must treat both forms identically.
+const API_VERSION_PREFIX = "(?:\\/v[0-9][0-9.]*)?";
+
+// Matches /containers/<id>/<op> and bare /containers/<id>, with or without the
+// version prefix. Returns the <id> for ownership-checked ops, or null for
+// collection endpoints (create/json/prune) and non-container paths.
+const CONTAINER_SCOPED_RE = new RegExp(`^${API_VERSION_PREFIX}\\/containers\\/([^/?]+)(?:\\/[^?]*)?(?:\\?.*)?$`);
+const EXEC_SCOPED_RE = new RegExp(`^${API_VERSION_PREFIX}\\/exec\\/([^/?]+)(?:\\/[^?]*)?(?:\\?.*)?$`);
 const CONTAINER_COLLECTION_IDS = new Set(["create", "json", "prune"]);
 
 export function parseContainerScopedId(urlPath: string): string | null {
@@ -377,6 +386,71 @@ export function parseContainerScopedId(urlPath: string): string | null {
   const id = decodeURIComponent(m[1]);
   if (CONTAINER_COLLECTION_IDS.has(id)) return null;
   return id;
+}
+
+export function parseExecScopedId(urlPath: string): string | null {
+  const m = EXEC_SCOPED_RE.exec(urlPath);
+  if (!m) return null;
+  return decodeURIComponent(m[1]);
+}
+
+function stripApiVersion(urlPath: string): string {
+  return urlPath.replace(/^\/v[0-9][0-9.]*(?=\/)/, "");
+}
+
+// Non-scoped Engine endpoints the sandbox legitimately uses, matched against the
+// version-stripped path. Anything not matched here (and not a container/exec op)
+// is denied under the default-deny posture.
+const PASSTHROUGH_RE: RegExp[] = [
+  /^\/_ping$/,
+  /^\/version(?:\/|$)/,
+  /^\/info$/,
+  /^\/events(?:$|\?)/,
+  /^\/system\//,
+  /^\/images(?:\/|\?|$)/,
+  /^\/build(?:$|\?)/,
+  /^\/commit(?:$|\?)/,
+  /^\/volumes(?:\/|\?|$)/,
+  /^\/networks(?:\/|\?|$)/,
+  /^\/distribution\//,
+];
+
+export type RequestAction =
+  | { kind: "create" }
+  | { kind: "list" }
+  | { kind: "container"; id: string }
+  | { kind: "exec"; id: string }
+  | { kind: "passthrough" }
+  | { kind: "deny"; reason: string };
+
+/**
+ * Default-deny router: positively classify each request so unknown or unhandled
+ * shapes are rejected rather than forwarded raw. Create-interception, list-scoping
+ * and container/exec ownership checks all apply to both versioned and unversioned
+ * paths.
+ */
+export function classifyRequest(method: string, urlPath: string): RequestAction {
+  const pathOnly = stripApiVersion(urlPath).split("?")[0];
+
+  if (pathOnly === "/containers/create")
+    return method === "POST"
+      ? { kind: "create" }
+      : { kind: "deny", reason: "method not allowed on /containers/create" };
+  if (pathOnly === "/containers/json")
+    return method === "GET"
+      ? { kind: "list" }
+      : { kind: "deny", reason: "method not allowed on /containers/json" };
+  if (pathOnly === "/containers/prune") return { kind: "passthrough" };
+
+  const containerId = parseContainerScopedId(urlPath);
+  if (containerId !== null) return { kind: "container", id: containerId };
+
+  const execId = parseExecScopedId(urlPath);
+  if (execId !== null) return { kind: "exec", id: execId };
+
+  if (PASSTHROUGH_RE.some((re) => re.test(pathOnly))) return { kind: "passthrough" };
+
+  return { kind: "deny", reason: "endpoint is not permitted in the Vivi sandbox" };
 }
 
 /**
@@ -397,6 +471,35 @@ function lookupContainerSession(id: string): Promise<string | null> {
           try {
             const info = JSON.parse(data);
             resolve(info?.Config?.Labels?.[SESSION_LABEL] ?? null);
+          } catch { resolve(null); }
+        });
+      },
+    );
+    req.on("error", () => resolve(null));
+    req.on("timeout", () => { req.destroy(); resolve(null); });
+  });
+}
+
+/**
+ * Resolve the owning session of an exec instance: inspect the exec to find its
+ * ContainerID, then look up that container's session label. Returns null if the
+ * exec is missing/unresolvable.
+ */
+function lookupExecSession(execId: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    const safeId = encodeURIComponent(execId);
+    const req = http.get(
+      { host: DIND_HOST, port: DIND_PORT, path: `/exec/${safeId}/json`, timeout: 5_000 },
+      (res) => {
+        if (res.statusCode !== 200) { res.resume(); resolve(null); return; }
+        let data = "";
+        res.setEncoding("utf-8");
+        res.on("data", (c) => { data += c; });
+        res.on("end", () => {
+          try {
+            const cid = JSON.parse(data)?.ContainerID;
+            if (typeof cid !== "string" || !cid) { resolve(null); return; }
+            lookupContainerSession(cid).then(resolve, () => resolve(null));
           } catch { resolve(null); }
         });
       },
@@ -452,33 +555,37 @@ function handleConnection(client: net.Socket, sessionId: string): void {
       const method = firstLine.slice(0, spaceIdx).toUpperCase();
       const urlPath = firstLine.slice(spaceIdx + 1, firstLine.lastIndexOf(" "));
 
-      const scopedId =
-        method !== "POST" || !/^\/v[\d.]+\/containers\/create/.test(urlPath)
-          ? parseContainerScopedId(urlPath)
-          : null;
-
-      if (method === "POST" && /^\/v[\d.]+\/containers\/create/.test(urlPath)) {
-        interceptContainerCreate(client, upstream, listenForNextRequest, lines, rest, sessionId);
-      } else if (method === "GET" && /^\/v[\d.]+\/containers\/json/.test(urlPath)) {
-        const newPath = injectLabelFilter(urlPath, `${SESSION_LABEL}=${sessionId}`);
-        const newHeader = `GET ${newPath} ${firstLine.slice(firstLine.lastIndexOf(" ") + 1)}\r\n`
-          + lines.slice(1).join("\r\n") + "\r\n\r\n";
-        upstream.write(newHeader);
-        // GET has no request body — continue listening with leftover data
-        listenForNextRequest(rest.length ? rest : undefined);
-      } else if (scopedId !== null) {
-        handleContainerScoped(client, upstream, listenForNextRequest, lines, rest, sessionId, scopedId);
-      } else {
-        // Non-intercepted request — forward headers and consume body (if any)
-        // before re-entering listen mode for the next request.
-        upstream.write(buf.slice(0, sep + 4));
-        const clLine = lines.find((l) => /^content-length:/i.test(l));
-        const contentLength = clLine ? parseInt(clLine.split(":")[1].trim(), 10) : 0;
-        if (contentLength === 0) {
+      const action = classifyRequest(method, urlPath);
+      switch (action.kind) {
+        case "create":
+          interceptContainerCreate(client, upstream, listenForNextRequest, lines, rest, sessionId);
+          break;
+        case "list": {
+          const newPath = injectLabelFilter(urlPath, `${SESSION_LABEL}=${sessionId}`);
+          const newHeader = `GET ${newPath} ${firstLine.slice(firstLine.lastIndexOf(" ") + 1)}\r\n`
+            + lines.slice(1).join("\r\n") + "\r\n\r\n";
+          upstream.write(newHeader);
+          // GET has no request body — continue listening with leftover data
           listenForNextRequest(rest.length ? rest : undefined);
-        } else {
-          forwardBodyThenListen(client, upstream, rest, contentLength, listenForNextRequest);
+          break;
         }
+        case "container":
+          handleScopedRequest(client, upstream, listenForNextRequest, lines, rest, sessionId,
+            lookupContainerSession(action.id));
+          break;
+        case "exec":
+          handleScopedRequest(client, upstream, listenForNextRequest, lines, rest, sessionId,
+            lookupExecSession(action.id));
+          break;
+        case "passthrough":
+          // Known-safe endpoint — forward headers verbatim, frame the body, then
+          // re-enter listen mode so the next pipelined request is classified too.
+          upstream.write(buf.slice(0, sep + 4));
+          forwardBody(client, upstream, lines, rest, listenForNextRequest);
+          break;
+        case "deny":
+          denyRequest(client, upstream, 403, `${action.reason}`);
+          break;
       }
     };
 
@@ -524,6 +631,100 @@ function forwardBodyThenListen(
   flush();
 }
 
+/**
+ * Forward a request body (Content-Length or Transfer-Encoding: chunked) to
+ * upstream, then re-enter header-listening mode. Chunked bodies are properly
+ * framed (never blind-piped) so a pipelined request after a chunked one on the
+ * same keep-alive connection is still classified and validated.
+ */
+function forwardBody(
+  client: net.Socket,
+  upstream: net.Socket,
+  headerLines: string[],
+  rest: Buffer,
+  onDone: (leftover?: Buffer) => void,
+): void {
+  if (headerLines.some((l) => /^transfer-encoding:\s*chunked/i.test(l))) {
+    forwardChunkedBodyThenListen(client, upstream, rest, onDone);
+    return;
+  }
+  const clLine = headerLines.find((l) => /^content-length:/i.test(l));
+  const contentLength = clLine ? parseInt(clLine.split(":")[1].trim(), 10) : 0;
+  if (contentLength > 0) {
+    forwardBodyThenListen(client, upstream, rest, contentLength, onDone);
+  } else {
+    onDone(rest.length ? rest : undefined);
+  }
+}
+
+/**
+ * Forward an HTTP/1.1 chunked request body verbatim, parsing chunk framing so we
+ * stop exactly at the terminating 0-length chunk (plus trailers) and hand any
+ * leftover bytes — the next pipelined request — back to the classifier.
+ */
+function forwardChunkedBodyThenListen(
+  client: net.Socket,
+  upstream: net.Socket,
+  initial: Buffer,
+  onDone: (leftover?: Buffer) => void,
+): void {
+  let buf = initial;
+  let mode: "size" | "data" | "trailer" = "size";
+  let dataRemaining = 0;
+  let aborted = false;
+
+  const process = (): boolean => {
+    for (;;) {
+      if (mode === "data") {
+        const take = Math.min(buf.length, dataRemaining);
+        if (take > 0) {
+          upstream.write(buf.slice(0, take));
+          buf = buf.slice(take);
+          dataRemaining -= take;
+        }
+        if (dataRemaining > 0) return false;
+        mode = "size";
+        continue;
+      }
+      const i = buf.indexOf("\r\n");
+      if (i === -1) return false;
+      if (mode === "trailer") {
+        upstream.write(buf.slice(0, i + 2));
+        const end = i === 0; // blank line terminates the trailer section
+        buf = buf.slice(i + 2);
+        if (end) return true;
+        continue;
+      }
+      const size = parseInt(buf.slice(0, i).toString("utf-8").split(";")[0].trim(), 16);
+      upstream.write(buf.slice(0, i + 2));
+      buf = buf.slice(i + 2);
+      if (!Number.isFinite(size) || size < 0) {
+        aborted = true;
+        client.destroy();
+        upstream.destroy();
+        return true;
+      }
+      if (size === 0) { mode = "trailer"; continue; }
+      mode = "data";
+      dataRemaining = size + 2; // chunk data + trailing CRLF
+    }
+  };
+
+  const listener = (chunk: Buffer) => {
+    buf = Buffer.concat([buf, chunk]);
+    if (process() && !aborted) {
+      client.removeListener("data", listener);
+      onDone(buf.length ? buf : undefined);
+    }
+  };
+
+  client.on("data", listener);
+  if (process() && !aborted) {
+    client.removeListener("data", listener);
+    onDone(buf.length ? buf : undefined);
+  }
+}
+
 function interceptContainerCreate(
   client: net.Socket,
   upstream: net.Socket,
@@ -534,6 +735,13 @@ function interceptContainerCreate(
 ): void {
   const clLine = headerLines.find((l) => /^content-length:/i.test(l));
   const contentLength = clLine ? parseInt(clLine.split(":")[1].trim(), 10) : 0;
+
+  // Create must arrive as a Content-Length body so we can buffer, parse, validate
+  // and re-serialize it. A chunked/bodyless create can't be intercepted safely.
+  if (headerLines.some((l) => /^transfer-encoding:/i.test(l)) || !Number.isFinite(contentLength) || contentLength <= 0) {
+    denyRequest(client, upstream, 403, "container create must send a Content-Length body in the Vivi sandbox");
+    return;
+  }
 
   let body = rest;
 
@@ -591,18 +799,19 @@ function interceptContainerCreate(
 }
 
 /**
- * Forward a request targeting a specific container only if that container
- * belongs to this session. Buffers incoming bytes during the async ownership
- * check so no body data is lost, then either forwards header+body or rejects.
+ * Forward a request targeting a specific container/exec only if it belongs to
+ * this session (per the supplied ownership lookup). Buffers incoming bytes during
+ * the async check so no body data is lost, then either forwards header+body
+ * (chunked bodies are framed, not blind-piped) or rejects.
  */
-function handleContainerScoped(
+function handleScopedRequest(
   client: net.Socket,
   upstream: net.Socket,
   onDone: (leftover?: Buffer) => void,
   headerLines: string[],
   rest: Buffer,
   sessionId: string,
-  containerId: string,
+  ownerLookup: Promise<string | null>,
 ): void {
   // No data listener is attached right now (the header listener removed itself),
   // so buffer anything that arrives while we await the ownership lookup.
@@ -610,7 +819,7 @@ function handleContainerScoped(
   const buffering = (chunk: Buffer) => { buffered = Buffer.concat([buffered, chunk]); };
   client.on("data", buffering);
 
-  lookupContainerSession(containerId)
+  ownerLookup
     .then((owner) => {
       client.removeListener("data", buffering);
 
@@ -620,25 +829,9 @@ function handleContainerScoped(
         return;
       }
 
-      // Owned — forward the original headers unchanged.
+      // Owned — forward the original headers unchanged, then frame the body.
       upstream.write(Buffer.from(headerLines.join("\r\n") + "\r\n\r\n"));
-
-      const isChunked = headerLines.some((l) => /^transfer-encoding:\s*chunked/i.test(l));
-      if (isChunked) {
-        // Body length is unknown; forward what we have and raw-pipe the rest of
-        // this connection. Safe: every byte belongs to an owned container.
-        if (buffered.length) upstream.write(buffered);
-        client.on("data", (c: Buffer) => { upstream.write(c); });
-        return;
-      }
-
-      const clLine = headerLines.find((l) => /^content-length:/i.test(l));
-      const contentLength = clLine ? parseInt(clLine.split(":")[1].trim(), 10) : 0;
-      if (contentLength === 0) {
-        onDone(buffered.length ? buffered : undefined);
-      } else {
-        forwardBodyThenListen(client, upstream, buffered, contentLength, onDone);
-      }
+      forwardBody(client, upstream, headerLines, buffered, onDone);
     })
     .catch(() => {
       client.removeListener("data", buffering);

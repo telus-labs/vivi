@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Github, CheckCircle2, AlertTriangle, Eye, EyeOff, Trash2, ExternalLink } from "lucide-react";
 import type { GitHubAuthStatus } from "../lib/types";
 import * as api from "../lib/api";
@@ -16,15 +16,19 @@ export function GitHubSettings({ onStatusChange }: GitHubSettingsProps) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Ref keeps refresh stable when the parent passes an inline arrow
+  const onStatusChangeRef = useRef(onStatusChange);
+  useEffect(() => { onStatusChangeRef.current = onStatusChange; }, [onStatusChange]);
+
   const refresh = useCallback(async () => {
     try {
       const s = await api.getGitHubStatus();
       setStatus(s);
-      onStatusChange?.(s);
+      onStatusChangeRef.current?.(s);
     } catch (err: any) {
       setError(err.message);
     }
-  }, [onStatusChange]);
+  }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
 

@@ -236,7 +236,13 @@ export function DiffView({ prId, prTitle, onClose }: DiffViewProps) {
       </div>
       {loading && <div className="flex items-center justify-center py-12 text-gray-500"><Loader2 className="w-5 h-5 animate-spin mr-2" />Loading diff...</div>}
       {error && <div className="m-3 px-3 py-2 text-xs bg-red-500/10 border border-red-500/30 rounded text-red-400">{error}</div>}
-      {diff !== null && !loading && (
+      {diff !== null && !loading && files.length === 0 && (
+        <div className="py-8 text-center text-gray-500 text-sm">
+          <FileCode2 className="w-8 h-8 mx-auto mb-2 opacity-50" />
+          No changes in diff.
+        </div>
+      )}
+      {diff !== null && !loading && files.length > 0 && (
         <div className="flex flex-1 overflow-hidden">
           <div className="shrink-0 border-r border-[var(--color-border)] flex flex-col overflow-hidden" style={{ width: treeWidth }}>
             <div className="px-2.5 pt-2.5 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-600 shrink-0">Changed files</div>
@@ -258,7 +264,6 @@ export function DiffView({ prId, prTitle, onClose }: DiffViewProps) {
           )}
         </div>
       )}
-      {diff !== null && diff.length === 0 && !loading && <div className="py-8 text-center text-gray-500 text-sm">No changes in diff.</div>}
     </div>
   );
 }

@@ -12,20 +12,33 @@ export function BackendSwitcher() {
   const [url, setUrl] = useState("");
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<boolean | null>(null);
+  const [confirmingRemove, setConfirmingRemove] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Close on outside click
+  useEffect(() => () => { if (confirmTimer.current) clearTimeout(confirmTimer.current); }, []);
+
+  // Close on outside click or Escape
   useEffect(() => {
     if (!open) return;
+    const close = () => {
+      setOpen(false);
+      setAdding(false);
+      setEditing(null);
+      setConfirmingRemove(null);
+    };
     const handler = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setOpen(false);
-        setAdding(false);
-        setEditing(null);
-      }
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) close();
+    };
+    const keyHandler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close();
     };
     document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
+    document.addEventListener("keydown", keyHandler);
+    return () => {
+      document.removeEventListener("mousedown", handler);
+      document.removeEventListener("keydown", keyHandler);
+    };
   }, [open]);
 
   const handleTest = async () => {
@@ -51,6 +64,18 @@ export function BackendSwitcher() {
     setEditing(null);
     setName("");
     setUrl("");
+  };
+
+  const handleRemove = (b: { id: string; isActive?: boolean }) => {
+    if (confirmTimer.current) clearTimeout(confirmTimer.current);
+    if (confirmingRemove !== b.id) {
+      setConfirmingRemove(b.id);
+      confirmTimer.current = setTimeout(() => setConfirmingRemove(null), 3000);
+      return;
+    }
+    setConfirmingRemove(null);
+    removeBackend(b.id);
+    if (b.isActive) switchBackend(null);
   };
 
   const startEdit = (backend: { id: string; name: string; url: string }) => {
@@ -116,7 +141,14 @@ export function BackendSwitcher() {
                   </button>
                   {b.isActive && <Check className="w-4 h-4 text-blue-400 shrink-0" />}
                   <button onClick={() => startEdit(b)} className="p-1 text-gray-500 hover:text-gray-300 transition-colors shrink-0" title="Edit"><Pencil className="w-3 h-3" /></button>
-                  <button onClick={() => { removeBackend(b.id); if (b.isActive) switchBackend(null); }} className="p-1 text-gray-500 hover:text-red-400 transition-colors shrink-0" title="Remove"><Trash2 className="w-3 h-3" /></button>
+                  <button
+                    onClick={() => handleRemove(b)}
+                    onBlur={() => setConfirmingRemove(null)}
+                    className={confirmingRemove === b.id ? "px-1 text-[10px] font-medium text-red-400 hover:text-red-300 transition-colors shrink-0" : "p-1 text-gray-500 hover:text-red-400 transition-colors shrink-0"}
+                    title={confirmingRemove === b.id ? "Click again to remove" : "Remove"}
+                  >
+                    {confirmingRemove === b.id ? "Confirm?" : <Trash2 className="w-3 h-3" />}
+                  </button>
                 </>
               )}
             </div>

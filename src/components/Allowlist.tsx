@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { Globe, Plus, Trash2, ShieldOff, ShieldCheck, Pencil, Check, X } from "lucide-react";
+import { Globe, Plus, Trash2, ShieldOff, ShieldCheck, Pencil, Check, X, AlertTriangle } from "lucide-react";
 import type { AllowlistConfig } from "../lib/types";
 import * as api from "../lib/api";
 
@@ -8,26 +8,69 @@ export function Allowlist() {
   const [netInput, setNetInput] = useState({ pattern: "", description: "" });
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValues, setEditValues] = useState({ pattern: "", description: "" });
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
-    setConfig(await api.getAllowlist());
+    try {
+      setConfig(await api.getAllowlist());
+      setLoadError(null);
+    } catch (e: any) {
+      setLoadError(e.message);
+    }
   }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
 
-  if (!config) return null;
+  if (!config) {
+    if (!loadError) return null;
+    return (
+      <div className="px-3 py-2 text-sm bg-red-500/10 border border-red-500/30 rounded text-red-400 flex items-start gap-2">
+        <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+        <div className="flex-1 min-w-0">
+          <div>{loadError}</div>
+          <button
+            onClick={refresh}
+            className="mt-2 text-xs text-gray-300 underline hover:text-white"
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   const addNet = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!netInput.pattern.trim()) return;
-    await api.addNetworkRule(netInput.pattern.trim(), netInput.description.trim() || undefined);
-    setNetInput({ pattern: "", description: "" });
-    refresh();
+    try {
+      await api.addNetworkRule(netInput.pattern.trim(), netInput.description.trim() || undefined);
+      setNetInput({ pattern: "", description: "" });
+      setActionError(null);
+      refresh();
+    } catch (e: any) {
+      setActionError(e.message);
+    }
   };
 
   const toggleEnabled = async () => {
-    await api.setAllowlistEnabled(!config.enabled);
-    refresh();
+    try {
+      await api.setAllowlistEnabled(!config.enabled);
+      setActionError(null);
+      refresh();
+    } catch (e: any) {
+      setActionError(e.message);
+    }
+  };
+
+  const removeRule = async (id: string) => {
+    try {
+      await api.removeNetworkRule(id);
+      setActionError(null);
+      refresh();
+    } catch (e: any) {
+      setActionError(e.message);
+    }
   };
 
   const startEdit = (rule: { id: string; pattern: string; description?: string }) => {
@@ -42,10 +85,15 @@ export function Allowlist() {
 
   const saveEdit = async () => {
     if (!editingId || !editValues.pattern.trim()) return;
-    await api.updateNetworkRule(editingId, editValues.pattern.trim(), editValues.description.trim() || undefined);
-    setEditingId(null);
-    setEditValues({ pattern: "", description: "" });
-    refresh();
+    try {
+      await api.updateNetworkRule(editingId, editValues.pattern.trim(), editValues.description.trim() || undefined);
+      setEditingId(null);
+      setEditValues({ pattern: "", description: "" });
+      setActionError(null);
+      refresh();
+    } catch (e: any) {
+      setActionError(e.message);
+    }
   };
 
   return (
@@ -86,6 +134,13 @@ export function Allowlist() {
           {config.enabled ? "Disable" : "Enable"}
         </button>
       </div>
+
+      {actionError && (
+        <div className="px-3 py-2 text-sm bg-red-500/10 border border-red-500/30 rounded text-red-400 flex items-start gap-2">
+          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+          <span>{actionError}</span>
+        </div>
+      )}
 
       {/* Network allowlist */}
       <section className={`space-y-3 ${!config.enabled ? "opacity-50 pointer-events-none" : ""}`}>
@@ -172,7 +227,7 @@ export function Allowlist() {
                       <Pencil className="w-3.5 h-3.5" />
                     </button>
                     <button
-                      onClick={() => { api.removeNetworkRule(rule.id); refresh(); }}
+                      onClick={() => removeRule(rule.id)}
                       className="p-1 text-gray-500 hover:text-red-400 transition-colors"
                     >
                       <Trash2 className="w-3.5 h-3.5" />

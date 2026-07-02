@@ -212,19 +212,26 @@ export function LiveDiffView({ sessionId }: LiveDiffViewProps) {
   const [viewingFile, setViewingFile] = useState<string | null>(null);
   const sectionRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const { width: treeWidth, onMouseDown } = useResizable(200, 120, 400);
+  // Stale-response guard: only the most recently issued request can update state
+  const requestIdRef = useRef(0);
 
   const fetchDiff = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     else setRefreshing(true);
     setError(null);
+    const myReqId = ++requestIdRef.current;
     try {
       const r = await api.getSessionDiff(sessionId);
+      if (myReqId !== requestIdRef.current) return;
       setDiff(r.diff);
     } catch (e: any) {
+      if (myReqId !== requestIdRef.current) return;
       setError(e.message);
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (myReqId === requestIdRef.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   }, [sessionId]);
 

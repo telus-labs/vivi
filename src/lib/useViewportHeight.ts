@@ -2,7 +2,10 @@ import { useEffect, useState } from "react";
 
 /**
  * Syncs a `--app-height` CSS custom property with the current visual viewport
- * height so the root layout shrinks when the iOS on-screen keyboard opens.
+ * height so the root layout shrinks when the on-screen keyboard opens. Relies
+ * on the keyboard overlaying the layout viewport (interactive-widget=
+ * overlays-content on Android; Safari's only behavior) so innerHeight stays
+ * fixed and the delta below detects the keyboard.
  *
  * Returns `keyboardOpen` — true when the visual viewport is noticeably smaller
  * than the layout viewport (heuristic: more than 120 px shorter than

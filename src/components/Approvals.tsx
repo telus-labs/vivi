@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   GitBranch, Download, ExternalLink, Loader2, CheckCircle2, XCircle, RefreshCw, FileCode2, X, Edit3,
 } from "lucide-react";
@@ -56,6 +56,10 @@ function BranchCard({ pr, sessionLabel, isCurrentSession, onUpdate, onViewDiff }
   const [error, setError] = useState<string | null>(null);
   const [showPrForm, setShowPrForm] = useState(false);
   const [prDescription, setPrDescription] = useState(pr.description || "");
+  const [confirmingDismiss, setConfirmingDismiss] = useState(false);
+  const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => { if (confirmTimer.current) clearTimeout(confirmTimer.current); }, []);
 
   const handlePullLocal = async () => {
     setActionLoading(true); setError(null);
@@ -68,7 +72,14 @@ function BranchCard({ pr, sessionLabel, isCurrentSession, onUpdate, onViewDiff }
   };
 
   const handleDismiss = async () => {
-    try { await api.dismissPr(pr.id); onUpdate(); } catch (err) { console.warn(`Failed to dismiss PR ${pr.id}:`, err); }
+    if (confirmTimer.current) clearTimeout(confirmTimer.current);
+    if (!confirmingDismiss) {
+      setConfirmingDismiss(true);
+      confirmTimer.current = setTimeout(() => setConfirmingDismiss(false), 3000);
+      return;
+    }
+    setConfirmingDismiss(false);
+    try { await api.dismissPr(pr.id); onUpdate(); } catch (err: any) { setError(err.message || "Failed to dismiss"); }
   };
 
   const isPending = pr.status === "pending";
@@ -93,8 +104,13 @@ function BranchCard({ pr, sessionLabel, isCurrentSession, onUpdate, onViewDiff }
         <div className="flex items-center gap-1.5 shrink-0">
           <StatusBadge status={pr.status} />
           {isDismissible && (
-            <button onClick={handleDismiss} className="p-0.5 text-gray-600 hover:text-gray-300 transition-colors rounded" title="Dismiss">
-              <X className="w-3.5 h-3.5" />
+            <button
+              onClick={handleDismiss}
+              onBlur={() => setConfirmingDismiss(false)}
+              className={confirmingDismiss ? "px-1 text-[10px] font-medium text-red-400 hover:text-red-300 transition-colors rounded" : "p-0.5 text-gray-600 hover:text-gray-300 transition-colors rounded"}
+              title={confirmingDismiss ? "Click again to dismiss" : "Dismiss"}
+            >
+              {confirmingDismiss ? "Confirm?" : <X className="w-3.5 h-3.5" />}
             </button>
           )}
         </div>

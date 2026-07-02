@@ -160,4 +160,23 @@ describe("SandboxImages", () => {
     const defaultDeleteBtn = deleteButtons[0];
     expect(defaultDeleteBtn).toBeDisabled();
   });
+
+  it("shows an error with retry when the initial load fails", async () => {
+    const user = userEvent.setup();
+    mockedApi.listSandboxImages
+      .mockRejectedValueOnce(new Error("Failed to load images"))
+      .mockResolvedValueOnce(baseImages);
+
+    render(<SandboxImages />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Failed to load images")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Default Image")).toBeInTheDocument();
+    });
+  });
 });

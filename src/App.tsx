@@ -101,6 +101,7 @@ export function App() {
   const [secretRequests, setSecretRequests] = useState<SecretRequest[]>([]);
   const [showRenameTip, setShowRenameTip] = useState(false);
   const [previewPort, setPreviewPort] = useState<PortForward | null>(null);
+  const [stoppingIds, setStoppingIds] = useState<Set<string>>(new Set());
   const [previewFullscreen, setPreviewFullscreen] = useState(false);
   const [isSmallScreen, setIsSmallScreen] = useState(() => window.matchMedia("(max-width: 1023px)").matches);
   const [isLandscape, setIsLandscape] = useState(() => window.matchMedia("(orientation: landscape)").matches);
@@ -118,7 +119,9 @@ export function App() {
   })());
 
   const activeSession = sessions.find((s) => s.id === activeSessionId) || null;
-  const isRunning = activeSession?.status === "running";
+  const activeSessionStatus = activeSession?.status ?? null;
+  const isRunning = activeSessionStatus === "running";
+  const hasActiveSession = !!activeSession;
   // Monitor tab is disabled (see GLOBAL_TABS), so its alert badge has no
   // destination — hide it by forcing alertCount to 0. Restore when the
   // Monitor tab is re-enabled.
@@ -243,9 +246,7 @@ export function App() {
 
   // Connect monitor WebSocket for the active session
   useEffect(() => {
-    if (!activeSessionId) return;
-    const activeSessionObj = sessions.find((s) => s.id === activeSessionId);
-    if (!activeSessionObj || activeSessionObj.status !== "running") return;
+    if (!activeSessionId || activeSessionStatus !== "running") return;
     const ws = new WebSocket(`${getWsBase()}/monitor?sessionId=${encodeURIComponent(activeSessionId)}`);
     monitorWsRef.current = ws;
     ws.onmessage = (event) => {
@@ -280,7 +281,7 @@ export function App() {
     });
     ws.onclose = () => { monitorWsRef.current = null; };
     return () => { ws.close(); monitorWsRef.current = null; setHealth(null); };
-  }, [activeSessionId, sessions]);
+  }, [activeSessionId, activeSessionStatus]);
 
   // Update monitor tab flash from App-level health data (works even when Monitor tab isn't active)
   useEffect(() => {
@@ -289,9 +290,7 @@ export function App() {
   }, [health]);
 
   useEffect(() => {
-    if (!activeSessionId) return;
-    const activeSessionObj = sessions.find((s) => s.id === activeSessionId);
-    if (!activeSessionObj || activeSessionObj.status !== "running") return;
+    if (!activeSessionId || activeSessionStatus !== "running") return;
     const refreshCounts = async () => {
       try { const prs = await api.getPrRequests(activeSessionId); setPendingPrCounts((prev) => ({ ...prev, [activeSessionId]: prs.filter((p) => p.status === "pending").length })); } catch (err) { console.warn(`refreshCounts: failed to fetch PR requests for session ${activeSessionId}`, err); }
       try { const ports = await api.getOpenPorts(activeSessionId); setPortCounts((prev) => ({ ...prev, [activeSessionId]: ports.length })); } catch (err) { console.warn(`refreshCounts: failed to fetch open ports for session ${activeSessionId}`, err); }
@@ -299,7 +298,7 @@ export function App() {
     refreshCounts();
     const interval = setInterval(refreshCounts, 10000);
     return () => clearInterval(interval);
-  }, [activeSessionId, sessions]);
+  }, [activeSessionId, activeSessionStatus]);
 
   useEffect(() => {
     if (showNewSessionForm || sessions.length === 0) {
@@ -310,7 +309,8 @@ export function App() {
       api.listSandboxImages().then((images) => {
         setSandboxImages(images);
         const defaultImg = images.find(i => i.isDefault);
-        if (defaultImg) setForm(f => ({ ...f, imageId: String(defaultImg.id) }));
+        // Only fill the default when unset — don't clobber a user's selection.
+        if (defaultImg) setForm(f => f.imageId ? f : { ...f, imageId: String(defaultImg.id) });
       }).catch((err) => console.warn("Failed to fetch sandbox images:", err));
     }
   }, [showNewSessionForm, sessions.length]);
@@ -349,6 +349,12 @@ export function App() {
     };
   }, []);
 
+  // Don't carry a port preview (possibly a dead port) across sessions
+  useEffect(() => {
+    setPreviewPort(null);
+    setPreviewFullscreen(false);
+  }, [activeSessionId]);
+
   // Close mobile menu on outside click
   useEffect(() => {
     if (!mobileMenuOpen) return;
@@ -379,6 +385,8 @@ export function App() {
   };
 
   const handleStopSession = async (sessionId: string) => {
+    if (stoppingIds.has(sessionId)) return;
+    setStoppingIds((prev) => new Set(prev).add(sessionId));
     try {
       await api.stopSession(sessionId);
       if (sessionId === activeSessionId) {
@@ -388,6 +396,7 @@ export function App() {
       }
       refreshSessions();
     } catch (err: any) { setError(err.message); }
+    finally { setStoppingIds((prev) => { const next = new Set(prev); next.delete(sessionId); return next; }); }
   };
 
   const showStartForm = showNewSessionForm || sessions.length === 0;
@@ -453,42 +462,59 @@ export function App() {
     if (tab && !primaryTabs.find((t) => t.id === tab)) setTab(primaryTabs[0].id);
   }, [tab, primaryTabs, diffPr]);
 
-  // Switch to global tabs when no session; auto-open session tabs when one starts
+  // Switch to global tabs when no session; auto-open session tabs when one starts.
+  // Keyed on booleans so it fires only on actual transitions, not on every
+  // sessions refresh (which would yank the user off a global tab they opened).
   useEffect(() => {
-    if (!activeSession) {
+    if (!hasActiveSession) {
       setTab((prev) => prev && !GLOBAL_TABS.some((g) => g.id === prev) ? "secrets" : prev ?? "secrets");
-    } else if (isRunning && tab && GLOBAL_TABS.some((g) => g.id === tab)) {
-      setTab("diff");
+    } else if (isRunning) {
+      setTab((prev) => prev && GLOBAL_TABS.some((g) => g.id === prev) ? "diff" : prev);
     }
-  }, [activeSession, isRunning]);
+  }, [hasActiveSession, isRunning]);
 
   const handleDragHandlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault();
     isDraggingRef.current = true;
     (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
 
+    let lastWidth: number | null = null;
+
     const onPointerMove = (moveEvent: PointerEvent) => {
       if (!isDraggingRef.current || !flexContainerRef.current) return;
       const rect = flexContainerRef.current.getBoundingClientRect();
       const rawPct = ((moveEvent.clientX - rect.left) / rect.width) * 100;
-      setPanelWidth(clampWidth(rawPct));
+      lastWidth = clampWidth(rawPct);
+      setPanelWidth(lastWidth);
+    };
+
+    const removeListeners = () => {
+      document.removeEventListener("pointermove", onPointerMove);
+      document.removeEventListener("pointerup", onPointerUp);
+      document.removeEventListener("pointercancel", onPointerCancel);
     };
 
     const onPointerUp = (upEvent: PointerEvent) => {
       if (!isDraggingRef.current) return;
       isDraggingRef.current = false;
+      removeListeners();
       if (!flexContainerRef.current) return;
       const rect = flexContainerRef.current.getBoundingClientRect();
       const rawPct = ((upEvent.clientX - rect.left) / rect.width) * 100;
       const clamped = clampWidth(rawPct);
       setPanelWidth(clamped);
       localStorage.setItem(PANEL_WIDTH_KEY, String(clamped));
-      document.removeEventListener("pointermove", onPointerMove);
-      document.removeEventListener("pointerup", onPointerUp);
+    };
+
+    const onPointerCancel = () => {
+      isDraggingRef.current = false;
+      removeListeners();
+      if (lastWidth !== null) localStorage.setItem(PANEL_WIDTH_KEY, String(lastWidth));
     };
 
     document.addEventListener("pointermove", onPointerMove);
     document.addEventListener("pointerup", onPointerUp);
+    document.addEventListener("pointercancel", onPointerCancel);
   }, []);
 
   return (
@@ -588,7 +614,7 @@ export function App() {
       )}
 
       {/* Top bar: session tabs */}
-      <header className="flex items-center bg-[var(--color-surface-raised)] border-b border-[var(--color-border)]">
+      <header className="relative flex items-center bg-[var(--color-surface-raised)] border-b border-[var(--color-border)]">
         <div className="flex items-center gap-3 px-2 sm:px-4 py-2 border-r border-[var(--color-border)]"><img src="/icons/vivi-logo.png" alt="Vivi" className="h-6 sm:h-7" /></div>
         <div className="flex items-center flex-1 overflow-x-auto relative">
           {sessions.map((session) => {
@@ -616,27 +642,28 @@ export function App() {
                   >{sessionNames[session.id] || session.repoName || "Session"}</span>
                 )}
                 {sessionPrCount > 0 && <span className="px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-purple-500 text-white">{sessionPrCount}</span>}
-                <span onClick={(e) => { e.stopPropagation(); handleStopSession(session.id); }} className="ml-1 p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-[var(--color-border)] transition-all" title="Stop session"><X className="w-3 h-3" /></span>
+                <span onClick={(e) => { e.stopPropagation(); handleStopSession(session.id); }} className={`ml-1 p-0.5 rounded transition-all ${stoppingIds.has(session.id) ? "opacity-100" : "opacity-0 group-hover:opacity-100 hover:bg-[var(--color-border)]"}`} title="Stop session">{stoppingIds.has(session.id) ? <Loader2 className="w-3 h-3 animate-spin" /> : <X className="w-3 h-3" />}</span>
               </button>
             );
           })}
-          {showRenameTip && (
-            <div className="absolute left-[120px] top-full mt-1 z-50 flex items-center gap-2 px-3 py-1.5 bg-[var(--color-accent-muted)] border border-[var(--color-accent)]/40 rounded-lg shadow-lg text-xs text-white whitespace-nowrap animate-fade-in">
-              <span>Tip: double-click a tab to rename it</span>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setShowRenameTip(false);
-                  markRenameTipSeen();
-                }}
-                className="p-0.5 rounded hover:bg-white/10 transition-colors"
-              >
-                <X className="w-3 h-3" />
-              </button>
-            </div>
-          )}
           <button onClick={() => setShowNewSessionForm(true)} className={`flex items-center gap-1 px-3 py-2 text-sm transition-colors border-b-2 ${showNewSessionForm ? "border-[var(--color-accent)] text-white" : "border-transparent text-gray-500 hover:text-gray-300"}`} title="New session"><Plus className="w-4 h-4" /></button>
         </div>
+        {/* Positioned against the header, not the tab strip — overflow-x-auto there clips absolute children */}
+        {showRenameTip && (
+          <div className="absolute left-[120px] top-full mt-1 z-50 flex items-center gap-2 px-3 py-1.5 bg-[var(--color-accent-muted)] border border-[var(--color-accent)]/40 rounded-lg shadow-lg text-xs text-white whitespace-nowrap animate-fade-in">
+            <span>Tip: double-click a tab to rename it</span>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowRenameTip(false);
+                markRenameTipSeen();
+              }}
+              className="p-0.5 rounded hover:bg-white/10 transition-colors"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+        )}
         <div className="flex items-center gap-2 px-4 py-2 border-l border-[var(--color-border)]">
           {activeSession && activePrCount > 0 && <button onClick={() => { if (isMobile) { setMobileTab("approvals"); setMobileMenuOpen(false); } else setTab("approvals"); }} className="flex items-center gap-1 px-2 py-1 text-xs bg-purple-500/15 text-purple-400 rounded hover:bg-purple-500/25 transition-colors animate-pulse"><GitBranch className="w-3 h-3" /><span className="hidden sm:inline">{activePrCount} branch{activePrCount !== 1 ? "es" : ""}</span></button>}
           {activeSession && alertCount > 0 && <button onClick={() => { if (isMobile) { setMobileTab("monitor"); setMobileMenuOpen(false); } else setTab("monitor"); }} className="flex items-center gap-1 px-2 py-1 text-xs bg-yellow-500/15 text-yellow-400 rounded hover:bg-yellow-500/25 transition-colors"><AlertTriangle className="w-3 h-3" /><span className="hidden sm:inline">{alertCount} alert{alertCount !== 1 ? "s" : ""}</span></button>}
@@ -869,7 +896,7 @@ export function App() {
 
         {tab && !isMobile && (
           <div
-            className="w-1 shrink-0 cursor-col-resize group flex items-center justify-center hover:bg-[var(--color-border)]/40 transition-colors"
+            className="w-1 shrink-0 cursor-col-resize touch-none group flex items-center justify-center hover:bg-[var(--color-border)]/40 transition-colors"
             style={{ width: "4px" }}
             onPointerDown={handleDragHandlePointerDown}
           >
@@ -940,8 +967,8 @@ export function App() {
                     </div>
                   )}
                 </div>
-                {previewPort ? (
-                  <div className="flex flex-col h-full">
+                {previewPort && (tab === "ports" || previewFullscreen) ? (
+                  <div className={previewFullscreen ? "fixed inset-0 z-50 flex flex-col bg-[var(--color-surface)]" : "flex flex-col h-full"}>
                     <div className="flex items-center gap-2.5 px-3 py-1.5 bg-[var(--color-surface-raised)] border-b border-[var(--color-border)] min-h-[36px] shrink-0">
                       <Network className="w-3.5 h-3.5 text-[var(--color-accent)] shrink-0" />
                       <span className="text-xs font-semibold truncate min-w-0">
@@ -1034,7 +1061,7 @@ export function App() {
             </span>
           </div>
           <div className="flex-1 overflow-auto">
-            {previewPort ? (
+            {previewPort && mobileTab === "ports" ? (
               <div className="flex flex-col h-full">
                 <div className="flex items-center gap-2.5 px-3 py-1.5 bg-[var(--color-surface-raised)] border-b border-[var(--color-border)] min-h-[36px] shrink-0">
                   <Network className="w-3.5 h-3.5 text-[var(--color-accent)] shrink-0" />
@@ -1069,49 +1096,6 @@ export function App() {
               </div>
             )}
           </div>
-        </div>
-      )}
-      {previewPort && previewFullscreen && (
-        <div className="fixed inset-0 z-50 flex flex-col bg-[var(--color-surface)]">
-          <div className="flex items-center gap-2.5 px-3 py-1.5 bg-[var(--color-surface-raised)] border-b border-[var(--color-border)] min-h-[36px] shrink-0">
-            <Network className="w-3.5 h-3.5 text-[var(--color-accent)] shrink-0" />
-            <span className="text-xs font-semibold truncate min-w-0">
-              {previewPort.label || `Port ${previewPort.containerPort}`}
-            </span>
-            <span className="text-[10px] text-gray-600 shrink-0 font-mono">
-              {previewPort.proxySubdomain || `${host}:${previewPort.hostPort}`}
-            </span>
-            <span className="flex-1" />
-            <a
-              href={getPortForwardUrl(previewPort)}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="p-1 text-gray-600 hover:text-gray-400 rounded transition-colors"
-              title="Open in new tab"
-            >
-              <ExternalLink className="w-3.5 h-3.5" />
-            </a>
-            <button
-              onClick={() => setPreviewFullscreen(false)}
-              className="p-1 text-gray-600 hover:text-gray-400 rounded transition-colors"
-              title="Exit fullscreen"
-            >
-              <Minimize2 className="w-3.5 h-3.5" />
-            </button>
-            <button
-              onClick={() => { setPreviewPort(null); setPreviewFullscreen(false); }}
-              className="p-1 text-gray-600 hover:text-gray-400 rounded transition-colors"
-              title="Close preview"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          </div>
-          <iframe
-            src={getPortForwardUrl(previewPort)}
-            className="flex-1 w-full border-0 bg-white"
-            title={`Preview: ${previewPort.label || `Port ${previewPort.containerPort}`}`}
-            sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
-          />
         </div>
       )}
     </div>

@@ -83,6 +83,7 @@ export function ProgressMonitor({ sessionId, onStuckChange }: ProgressMonitorPro
   const wsRef = useRef<WebSocket | null>(null);
   const prevStuckRef = useRef(false);
   const audioCooldownRef = useRef(0);
+  const toggleEpochRef = useRef(0);
 
   const updateAlertPrefs = useCallback((update: Partial<AlertPrefs>) => {
     setAlertPrefs((prev) => {
@@ -122,8 +123,11 @@ export function ProgressMonitor({ sessionId, onStuckChange }: ProgressMonitorPro
     connect();
 
     const interval = setInterval(async () => {
+      const epoch = toggleEpochRef.current;
       try {
-        setHealth(await api.getHealth(sessionId));
+        const snapshot = await api.getHealth(sessionId);
+        // Drop polls started before an auto-intervene toggle — they carry the stale value
+        if (epoch === toggleEpochRef.current) setHealth(snapshot);
       } catch (err) { console.warn(`Failed to poll health for session ${sessionId}:`, err); }
     }, 5000);
 
@@ -301,6 +305,7 @@ export function ProgressMonitor({ sessionId, onStuckChange }: ProgressMonitorPro
             if (!sessionId) return;
             try {
               await api.setAutoIntervene(sessionId, !health.autoIntervene);
+              toggleEpochRef.current++;
               setHealth((prev) => prev ? { ...prev, autoIntervene: !prev.autoIntervene } : prev);
             } catch (err) { console.warn(`Failed to toggle auto-intervene for session ${sessionId}:`, err); }
           }}
@@ -430,24 +435,35 @@ export function ProgressMonitor({ sessionId, onStuckChange }: ProgressMonitorPro
 
 function ThresholdConfig({ sessionId, config, onUpdate }: { sessionId: string; config: MonitorConfig; onUpdate: (c: MonitorConfig) => void }) {
   const [local, setLocal] = useState(config);
-  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveTimersRef = useRef<Map<keyof MonitorConfig, ReturnType<typeof setTimeout>>>(new Map());
+  const dirtyRef = useRef<Set<keyof MonitorConfig>>(new Set());
 
-  // Sync if config changes externally
-  useEffect(() => { setLocal(config); }, [config]);
+  // Sync external config changes, but keep fields the user is still editing
+  useEffect(() => {
+    setLocal((prev) => {
+      const next = { ...config };
+      for (const field of dirtyRef.current) next[field] = prev[field];
+      return next;
+    });
+  }, [config]);
 
   const handleChange = (field: keyof MonitorConfig, value: number) => {
     if (value < 1) return;
-    const next = { ...local, [field]: value };
-    setLocal(next);
+    setLocal((prev) => ({ ...prev, [field]: value }));
+    dirtyRef.current.add(field);
 
-    // Debounced save
-    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
-    saveTimeoutRef.current = setTimeout(async () => {
+    // Debounced save, per field so editing one field doesn't cancel another's pending save
+    const timers = saveTimersRef.current;
+    const existing = timers.get(field);
+    if (existing) clearTimeout(existing);
+    timers.set(field, setTimeout(async () => {
+      timers.delete(field);
       try {
         const res = await api.setMonitorConfig(sessionId, { [field]: value });
+        if (!timers.has(field)) dirtyRef.current.delete(field);
         onUpdate(res.config);
       } catch (err) { console.warn(`Failed to save monitor config field "${field}":`, err); }
-    }, 500);
+    }, 500));
   };
 
   const fields: { key: keyof MonitorConfig; label: string; description: string }[] = [

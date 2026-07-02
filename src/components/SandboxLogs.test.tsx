@@ -47,6 +47,23 @@ describe("SandboxLogs", () => {
     });
   });
 
+  it("keeps logs visible with an error banner when a refresh fails", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<SandboxLogs sessionId="s1" />);
+
+    await waitFor(() => {
+      expect(findPreText(container, "line 1\nline 2\nline 3")).toBeTruthy();
+    });
+
+    mockGetSessionLogs.mockRejectedValue(new Error("poll failed"));
+    await user.click(screen.getByTitle("Refresh logs"));
+
+    await waitFor(() => {
+      expect(screen.getByText("poll failed")).toBeInTheDocument();
+    });
+    expect(findPreText(container, "line 1\nline 2\nline 3")).toBeTruthy();
+  });
+
   it("shows loading state initially", () => {
     mockGetSessionLogs.mockReturnValue(new Promise(() => {})); // never resolves
     render(<SandboxLogs sessionId="s1" />);

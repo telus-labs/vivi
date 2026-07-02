@@ -26,20 +26,17 @@ export function DockerContainers({ sessionId, onContainerCount }: DockerContaine
   }, [containers, onContainerCount]);
 
   const toggleExpand = useCallback((id: string) => {
-    setExpandedId((prev) => {
-      if (prev === id) {
-        unsubscribeLogs(id);
-        return null;
-      }
-      // Collapse previous
-      if (prev) unsubscribeLogs(prev);
-      // Expand new
-      subscribeLogs(id);
-      requestInspect(id);
-      setSubTab("logs");
-      return id;
-    });
-  }, [subscribeLogs, unsubscribeLogs, requestInspect]);
+    if (expandedId === id) {
+      unsubscribeLogs(id);
+      setExpandedId(null);
+      return;
+    }
+    if (expandedId) unsubscribeLogs(expandedId);
+    subscribeLogs(id);
+    requestInspect(id);
+    setSubTab("logs");
+    setExpandedId(id);
+  }, [expandedId, subscribeLogs, unsubscribeLogs, requestInspect]);
 
   return (
     <div className="space-y-4">

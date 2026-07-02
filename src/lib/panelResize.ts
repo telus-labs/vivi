@@ -5,7 +5,7 @@ export function getPanelWidth(): number {
     const v = localStorage.getItem(PANEL_WIDTH_KEY);
     if (!v) return 50;
     const parsed = parseFloat(v);
-    return isNaN(parsed) ? 50 : parsed;
+    return isNaN(parsed) ? 50 : clampWidth(parsed);
   } catch {
     return 50;
   }

@@ -60,13 +60,17 @@ export function GitHubIssues({ repoPath, onTaskDescriptionChange }: GitHubIssues
   const loadIssues = useCallback(async () => {
     if (!repoPath) return;
     setLoading(true);
-    setSelectedNumbers(new Set());
-    setOrderedSelected([]);
     try {
       const data = await api.getGitHubIssues(repoPath);
       setResult(data);
+      // Preserve selection across refresh; drop issues gone from the results
+      const valid = new Set(data.issues.map((i) => i.number));
+      setSelectedNumbers((prev) => new Set(Array.from(prev).filter((n) => valid.has(n))));
+      setOrderedSelected((prev) => prev.filter((n) => valid.has(n)));
     } catch (err: any) {
       setResult({ issues: [], repoOwner: "", repoName: "", error: err.message });
+      setSelectedNumbers(new Set());
+      setOrderedSelected([]);
     } finally {
       setLoading(false);
     }
@@ -140,11 +144,19 @@ export function GitHubIssues({ repoPath, onTaskDescriptionChange }: GitHubIssues
           {result.issues.map((issue) => {
             const isSelected = selectedNumbers.has(issue.number);
             return (
-              <button
+              <div
                 key={issue.number}
-                type="button"
+                role="button"
+                tabIndex={0}
+                aria-pressed={isSelected}
                 onClick={() => toggleIssue(issue.number)}
-                className={`w-full flex items-start gap-2.5 px-3 py-2 rounded-lg border text-left text-xs transition-colors ${
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    toggleIssue(issue.number);
+                  }
+                }}
+                className={`w-full flex items-start gap-2.5 px-3 py-2 rounded-lg border text-left text-xs cursor-pointer transition-colors ${
                   isSelected
                     ? "border-[var(--color-accent)] bg-[var(--color-accent-muted)]/20 text-white"
                     : "border-[var(--color-border)] bg-[var(--color-surface)] text-gray-400 hover:text-gray-200 hover:border-gray-600"
@@ -186,7 +198,7 @@ export function GitHubIssues({ repoPath, onTaskDescriptionChange }: GitHubIssues
                 >
                   <ExternalLink className="w-3 h-3" />
                 </a>
-              </button>
+              </div>
             );
           })}
         </div>

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { Box, Plus, Trash2, Star } from "lucide-react";
+import { Box, Plus, Trash2, Star, AlertTriangle } from "lucide-react";
 import type { SandboxImage } from "../lib/types";
 import * as api from "../lib/api";
 
@@ -8,14 +8,36 @@ export function SandboxImages() {
   const [nameInput, setNameInput] = useState("");
   const [imageInput, setImageInput] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
-    setImages(await api.listSandboxImages());
+    try {
+      setImages(await api.listSandboxImages());
+      setLoadError(null);
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : String(err));
+    }
   }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
 
-  if (!images) return null;
+  if (!images) {
+    if (!loadError) return null;
+    return (
+      <div className="px-3 py-2 text-sm bg-red-500/10 border border-red-500/30 rounded text-red-400 flex items-start gap-2">
+        <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+        <div className="flex-1 min-w-0">
+          <div>{loadError}</div>
+          <button
+            onClick={refresh}
+            className="mt-2 text-xs text-gray-300 underline hover:text-white"
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   const addImage = async (e: React.FormEvent) => {
     e.preventDefault();

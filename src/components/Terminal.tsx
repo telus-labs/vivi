@@ -399,6 +399,8 @@ export function Terminal({
       // Image paste: intercept paste events containing images, upload to container,
       // then type the file path so Claude can reference the image with @path.
       const handlePaste = (e: ClipboardEvent) => {
+        // Bail unless focus is inside the terminal — don't hijack pastes aimed at other inputs
+        if (!containerRef.current?.contains(document.activeElement)) return;
         if (!e.clipboardData || !sessionId) return;
         const items = Array.from(e.clipboardData.items);
         const imageItem = items.find((i) => i.type.startsWith("image/"));

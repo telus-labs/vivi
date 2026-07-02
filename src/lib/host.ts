@@ -27,8 +27,9 @@ export async function fetchHost(): Promise<string> {
     })
     .catch((err) => {
       console.warn("fetchHost: failed to fetch config, defaulting to localhost", err);
-      cachedHost = "localhost";
-      return cachedHost;
+      // Don't cache the fallback — let the next call retry once the backend is reachable.
+      fetchPromise = null;
+      return "localhost";
     });
 
   return fetchPromise;

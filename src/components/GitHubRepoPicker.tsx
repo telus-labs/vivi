@@ -18,6 +18,7 @@ const KIND_META: Record<GitHubRepo["kind"], { label: string; icon: React.ReactNo
 export function GitHubRepoPicker({ value, onChange, onNotConnected }: GitHubRepoPickerProps) {
   const [repos, setRepos] = useState<GitHubRepo[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loaded, setLoaded] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -57,6 +58,7 @@ export function GitHubRepoPicker({ value, onChange, onNotConnected }: GitHubRepo
       if (myReqId === requestIdRef.current) {
         setLoading(false);
         setRefreshing(false);
+        setLoaded(true);
       }
     }
   }, []);
@@ -102,6 +104,8 @@ export function GitHubRepoPicker({ value, onChange, onNotConnected }: GitHubRepo
     if (!selectedRepo) {
       setBranches(null);
       setBranchesError(null);
+      // Only notify if a selection existed and vanished (not on initial load)
+      if (selectedFullName) onChange(null);
       return;
     }
     let cancelled = false;
@@ -143,7 +147,7 @@ export function GitHubRepoPicker({ value, onChange, onNotConnected }: GitHubRepo
     onChange({ owner: selectedRepo.owner, name: selectedRepo.name, branch: branchName });
   };
 
-  if (loading) {
+  if (loading && !loaded) {
     return (
       <div className="flex items-center gap-2 text-sm text-gray-400 py-4">
         <Loader2 className="w-4 h-4 animate-spin" /> Loading GitHub repositories...
@@ -181,6 +185,9 @@ export function GitHubRepoPicker({ value, onChange, onNotConnected }: GitHubRepo
             placeholder="Search repositories..."
             className="w-full pl-10 pr-3 py-2.5 bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg text-sm focus:border-[var(--color-accent)] focus:outline-none"
           />
+          {loading && (
+            <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 animate-spin text-gray-500" />
+          )}
         </label>
         <button
           type="button"

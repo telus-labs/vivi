@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { UserCircle, Plus, Trash2 } from "lucide-react";
 import type { Profile } from "../lib/types";
 import * as api from "../lib/api";
@@ -8,6 +8,11 @@ export function ProfileManager() {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ name: "", description: "" });
   const [error, setError] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => { if (confirmTimer.current) clearTimeout(confirmTimer.current); }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -22,6 +27,7 @@ export function ProfileManager() {
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    setCreating(true);
     try {
       await api.createProfile({ name: form.name.trim(), description: form.description.trim() || undefined });
       setForm({ name: "", description: "" });
@@ -29,10 +35,19 @@ export function ProfileManager() {
       refresh();
     } catch (e: any) {
       setError(e.message);
+    } finally {
+      setCreating(false);
     }
   };
 
   const handleDelete = async (id: string) => {
+    if (confirmTimer.current) clearTimeout(confirmTimer.current);
+    if (confirmingId !== id) {
+      setConfirmingId(id);
+      confirmTimer.current = setTimeout(() => setConfirmingId(null), 3000);
+      return;
+    }
+    setConfirmingId(null);
     setError(null);
     try {
       await api.deleteProfile(id);
@@ -92,8 +107,8 @@ export function ProfileManager() {
             className="w-full px-3 py-1.5 text-sm bg-[var(--color-surface-raised)] border border-[var(--color-border)] rounded focus:border-[var(--color-accent)] focus:outline-none"
           />
           <div className="flex gap-2">
-            <button type="submit" className="px-3 py-1 text-xs bg-[var(--color-accent-muted)] hover:bg-[var(--color-accent)] text-white rounded transition-colors">
-              Create
+            <button type="submit" disabled={creating} className="px-3 py-1 text-xs bg-[var(--color-accent-muted)] hover:bg-[var(--color-accent)] disabled:opacity-50 text-white rounded transition-colors">
+              {creating ? "Creating..." : "Create"}
             </button>
             <button type="button" onClick={() => setShowForm(false)} className="px-3 py-1 text-xs text-gray-400 hover:text-gray-200 transition-colors">
               Cancel
@@ -125,10 +140,15 @@ export function ProfileManager() {
               </label>
               <button
                 onClick={() => handleDelete(p.id)}
-                className="p-1 text-gray-500 hover:text-red-400 transition-colors shrink-0"
-                title="Delete profile"
+                onBlur={() => setConfirmingId(null)}
+                className={
+                  confirmingId === p.id
+                    ? "px-1 py-0.5 text-xs font-medium text-red-400 hover:text-red-300 transition-colors shrink-0"
+                    : "p-1 text-gray-500 hover:text-red-400 transition-colors shrink-0"
+                }
+                title={confirmingId === p.id ? "Click again to delete" : "Delete profile"}
               >
-                <Trash2 className="w-3.5 h-3.5" />
+                {confirmingId === p.id ? "Confirm?" : <Trash2 className="w-3.5 h-3.5" />}
               </button>
             </div>
           ))}

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { KeyRound, Plus, Trash2, Eye, EyeOff, Shield, LogIn, Bell, X, Pencil } from "lucide-react";
 import type { SecretPublic, SecretRequest } from "../lib/types";
 import * as api from "../lib/api";
@@ -22,6 +22,9 @@ export function SecretManager({ onLoginStart, refreshKey, pendingRequests = [], 
   });
   const [showKey, setShowKey] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState({
     name: "",
@@ -41,9 +44,12 @@ export function SecretManager({ onLoginStart, refreshKey, pendingRequests = [], 
 
   useEffect(() => { refresh(); }, [refresh, refreshKey]);
 
+  useEffect(() => () => { if (confirmTimer.current) clearTimeout(confirmTimer.current); }, []);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    setSaving(true);
     try {
       await api.addSecret(form);
       setForm({ name: "", envVar: "CLAUDE_CODE_OAUTH_TOKEN", key: "", baseUrl: "https://api.anthropic.com", headerName: "x-api-key" });
@@ -52,10 +58,19 @@ export function SecretManager({ onLoginStart, refreshKey, pendingRequests = [], 
       refresh();
     } catch (err: any) {
       setError(err.message);
+    } finally {
+      setSaving(false);
     }
   };
 
   const handleRemove = async (id: string) => {
+    if (confirmTimer.current) clearTimeout(confirmTimer.current);
+    if (confirmingId !== id) {
+      setConfirmingId(id);
+      confirmTimer.current = setTimeout(() => setConfirmingId(null), 3000);
+      return;
+    }
+    setConfirmingId(null);
     try {
       await api.removeSecret(id);
       refresh();
@@ -80,12 +95,15 @@ export function SecretManager({ onLoginStart, refreshKey, pendingRequests = [], 
   const handleEditSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    setSaving(true);
     try {
       await api.updateSecret(editingId!, editForm);
       setEditingId(null);
       refresh();
     } catch (err: any) {
       setError(err.message);
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -260,9 +278,10 @@ export function SecretManager({ onLoginStart, refreshKey, pendingRequests = [], 
           <div className="flex gap-2 pt-1">
             <button
               type="submit"
-              className="px-4 py-2 text-sm bg-[var(--color-success)] hover:bg-green-600 text-white rounded transition-colors"
+              disabled={saving}
+              className="px-4 py-2 text-sm bg-[var(--color-success)] hover:bg-green-600 disabled:opacity-50 text-white rounded transition-colors"
             >
-              Save Secret
+              {saving ? "Saving..." : "Save Secret"}
             </button>
             <button
               type="button"
@@ -348,9 +367,10 @@ export function SecretManager({ onLoginStart, refreshKey, pendingRequests = [], 
               <div className="flex gap-2 pt-1">
                 <button
                   type="submit"
-                  className="px-4 py-2 text-sm bg-[var(--color-success)] hover:bg-green-600 text-white rounded transition-colors"
+                  disabled={saving}
+                  className="px-4 py-2 text-sm bg-[var(--color-success)] hover:bg-green-600 disabled:opacity-50 text-white rounded transition-colors"
                 >
-                  Save Changes
+                  {saving ? "Saving..." : "Save Changes"}
                 </button>
                 <button
                   type="button"
@@ -388,9 +408,15 @@ export function SecretManager({ onLoginStart, refreshKey, pendingRequests = [], 
                 </button>
                 <button
                   onClick={() => handleRemove(s.id)}
-                  className="p-1.5 text-gray-500 hover:text-red-400 transition-colors"
+                  onBlur={() => setConfirmingId(null)}
+                  className={
+                    confirmingId === s.id
+                      ? "px-1.5 py-1 text-xs font-medium text-red-400 hover:text-red-300 transition-colors"
+                      : "p-1.5 text-gray-500 hover:text-red-400 transition-colors"
+                  }
+                  title={confirmingId === s.id ? "Click again to delete" : "Delete secret"}
                 >
-                  <Trash2 className="w-4 h-4" />
+                  {confirmingId === s.id ? "Confirm?" : <Trash2 className="w-4 h-4" />}
                 </button>
               </div>
             </div>

@@ -125,7 +125,7 @@ describe("Allowlist", () => {
     });
 
     // Find the rule row containing *.github.com, then find the delete button (second button, after edit)
-    const ruleRow = screen.getByText("*.github.com").closest("div[class*='flex items-center justify-between']")!;
+    const ruleRow = screen.getByText("*.github.com").closest("div[class*='flex items-center justify-between']") as HTMLElement;
     const deleteBtn = within(ruleRow).getAllByRole("button")[1];
 
     await user.click(deleteBtn);
@@ -206,6 +206,44 @@ describe("Allowlist", () => {
 
     await waitFor(() => {
       expect(mockedApi.updateNetworkRule).toHaveBeenCalledWith("r1", "updated.github.com", "Updated GitHub");
+    });
+  });
+
+  it("shows an error with retry when the initial load fails", async () => {
+    const user = userEvent.setup();
+    mockedApi.getAllowlist
+      .mockRejectedValueOnce(new Error("Failed to load allowlist"))
+      .mockResolvedValueOnce(baseConfig);
+
+    render(<Allowlist />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Failed to load allowlist")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("*.github.com")).toBeInTheDocument();
+    });
+  });
+
+  it("shows an inline error when delete fails", async () => {
+    const user = userEvent.setup();
+    mockedApi.removeNetworkRule.mockRejectedValueOnce(new Error("Delete failed"));
+
+    render(<Allowlist />);
+
+    await waitFor(() => {
+      expect(screen.getByText("*.github.com")).toBeInTheDocument();
+    });
+
+    const ruleRow = screen.getByText("*.github.com").closest("div[class*='flex items-center justify-between']") as HTMLElement;
+    const deleteBtn = within(ruleRow).getAllByRole("button")[1];
+    await user.click(deleteBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText("Delete failed")).toBeInTheDocument();
     });
   });
 });

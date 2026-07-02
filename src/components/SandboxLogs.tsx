@@ -16,16 +16,21 @@ export function SandboxLogs({ sessionId }: SandboxLogsProps) {
   const [source, setSource] = useState<LogSource>("sandbox");
   const scrollRef = useRef<HTMLDivElement>(null);
   const [pinBottom, setPinBottom] = useState(true);
+  // Stale-response guard: only the most recently issued request can update state
+  const requestIdRef = useRef(0);
 
   const fetchLogs = useCallback(async () => {
+    const myReqId = ++requestIdRef.current;
     try {
-      setError(null);
       const data = await api.getSessionLogs(sessionId, tail, source);
+      if (myReqId !== requestIdRef.current) return;
       setLogs(data.logs);
+      setError(null);
     } catch (err: any) {
+      if (myReqId !== requestIdRef.current) return;
       setError(err.message);
     } finally {
-      setLoading(false);
+      if (myReqId === requestIdRef.current) setLoading(false);
     }
   }, [sessionId, tail, source]);
 
@@ -105,7 +110,7 @@ export function SandboxLogs({ sessionId }: SandboxLogsProps) {
         </div>
       </div>
 
-      {error ? (
+      {error && !logs ? (
         <div className="py-8 text-center text-gray-500 text-sm border border-dashed border-[var(--color-border)] rounded-lg">
           <ScrollText className="w-8 h-8 mx-auto mb-2 opacity-50" />
           <p>{error}</p>
@@ -117,6 +122,11 @@ export function SandboxLogs({ sessionId }: SandboxLogsProps) {
         </div>
       ) : (
         <div className="relative">
+          {error && (
+            <div className="mb-2 px-3 py-2 text-xs bg-red-500/10 border border-red-500/30 rounded text-red-400">
+              {error}
+            </div>
+          )}
           <div
             ref={scrollRef}
             onScroll={handleScroll}

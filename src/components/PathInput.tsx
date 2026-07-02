@@ -21,20 +21,26 @@ export function PathInput({ value, onChange, placeholder, className }: PathInput
   const [browseLoading, setBrowseLoading] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const fetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // When true, skip the next debounced fetch (used after explicit selection)
   const skipNextFetch = useRef(false);
+  // Stale-response guard: only the most recently issued request can update state
+  const requestIdRef = useRef(0);
 
   const fetchSuggestions = useCallback(async (path: string) => {
     if (!path) {
+      requestIdRef.current++;
       setSuggestions([]);
       setDirIsGit(false);
       setOpen(false);
       return;
     }
+    const myReqId = ++requestIdRef.current;
     setLoading(true);
     try {
       const { results, dirIsGit: isGit } = await api.completePath(path);
+      if (myReqId !== requestIdRef.current) return;
       setSuggestions(results);
       setDirIsGit(isGit);
       setSelectedIdx(0);
@@ -46,11 +52,12 @@ export function PathInput({ value, onChange, placeholder, className }: PathInput
         setOpen(results.length > 0);
       }
     } catch {
+      if (myReqId !== requestIdRef.current) return;
       setSuggestions([]);
       setDirIsGit(false);
       setOpen(false);
     } finally {
-      setLoading(false);
+      if (myReqId === requestIdRef.current) setLoading(false);
     }
   }, []);
 
@@ -64,6 +71,23 @@ export function PathInput({ value, onChange, placeholder, className }: PathInput
     fetchTimer.current = setTimeout(() => fetchSuggestions(value), 100);
     return () => { if (fetchTimer.current) clearTimeout(fetchTimer.current); };
   }, [value, fetchSuggestions]);
+
+  // Close browse panel on outside click or Escape
+  useEffect(() => {
+    if (!browsing) return;
+    const onMouseDown = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setBrowsing(false);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setBrowsing(false);
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [browsing]);
 
   // Scroll selected item into view
   useEffect(() => {
@@ -180,7 +204,7 @@ export function PathInput({ value, onChange, placeholder, className }: PathInput
   };
 
   return (
-    <div className="relative">
+    <div className="relative" ref={containerRef}>
       <FolderGit2 className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 z-10" />
       <input
         ref={inputRef}

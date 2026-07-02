@@ -39,6 +39,8 @@ const CA_KEY_FILE = process.env.CA_KEY_FILE || "/ca/ca-key.pem";
 const PORT = parseInt(process.env.PROXY_PORT || "7443", 10);
 const HOST_SERVER = process.env.HOST_SERVER || "host.docker.internal:7700";
 const TIMING_LOGS = JSON.parse(process.env.PROXY_TIMING_LOGS || "true");
+// Shared secret for proxy→host trusted calls. Must match VIVI_INTERNAL_TOKEN on the app service.
+const VIVI_INTERNAL_TOKEN = process.env.VIVI_INTERNAL_TOKEN || "";
 
 // --- Types ---
 
@@ -178,6 +180,25 @@ function isGitApiHost(hostname: string): boolean {
   return hostname === "api.github.com";
 }
 
+// Attach the internal shared-secret header to trusted proxy→host calls.
+function internalHeaders(base: Record<string, string> = {}): Record<string, string> {
+  return VIVI_INTERNAL_TOKEN ? { ...base, "x-vivi-internal-token": VIVI_INTERNAL_TOKEN } : base;
+}
+
+// vivi.internal is only allowed to reach sandbox-intended endpoints. Reject
+// anything that isn't a clean /api/sandbox/ path, defending against traversal
+// and normalization bypasses (encoded slashes, backslashes, "..", "@", "//").
+export function isAllowedInternalPath(rawPath: string): boolean {
+  const bad = (s: string) =>
+    s.includes("..") || s.includes("\\") || s.includes("//") ||
+    s.includes("@") || /%2f|%5c/i.test(s);
+  if (bad(rawPath)) return false;
+  let decoded: string;
+  try { decoded = decodeURIComponent(rawPath); } catch { return false; }
+  if (bad(decoded)) return false;
+  return rawPath.startsWith("/api/sandbox/") && decoded.startsWith("/api/sandbox/");
+}
+
 // --- MITM cert generation ---
 
 function getCertForHost(hostname: string): { key: Buffer; cert: Buffer } | null {
@@ -252,7 +273,7 @@ async function getHostCredentials(hostname: string): Promise<{ username: string;
   try {
     const res = await fetch(`http://${HOST_SERVER}/api/git/credentials`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: internalHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ host: hostname, protocol: "https" }),
     });
     if (!res.ok) {
@@ -275,7 +296,7 @@ async function getGhToken(): Promise<string | null> {
   if (ghTokenCache && ghTokenCache.expiresAt > Date.now()) return ghTokenCache.token;
 
   try {
-    const res = await fetch(`http://${HOST_SERVER}/api/git/gh-token`);
+    const res = await fetch(`http://${HOST_SERVER}/api/git/gh-token`, { headers: internalHeaders() });
     if (!res.ok) return null;
     const data = await res.json() as { token: string };
     if (data.token) {
@@ -430,7 +451,7 @@ async function interceptGitPush(
   try {
     await fetch(`http://${HOST_SERVER}/api/sandbox/git-push`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: internalHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ branch, sessionId, pushedRefs }),
     });
     log("GIT-PUSH", `Intercepted push to ${branch} (session ${sessionId || "unknown"})`);
@@ -470,7 +491,7 @@ async function interceptPrCreation(
     // Forward to host server
     const res = await fetch(`http://${HOST_SERVER}/api/sandbox/pr`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: internalHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({
         title: prData.title || "Untitled PR",
         description: prData.body || "",
@@ -548,14 +569,25 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Route vivi.internal to host server
+  // Route vivi.internal to host server — sandbox-intended endpoints only.
   if (target.hostname === "vivi.internal") {
+    if (!isAllowedInternalPath(target.pathname)) {
+      log("DENY", `INTERNAL ${req.method} ${target.pathname}`);
+      res.writeHead(403);
+      res.end("Forbidden: only /api/sandbox/ paths are reachable via vivi.internal\n");
+      return;
+    }
     const hostUrl = `http://${HOST_SERVER}${target.pathname}${target.search}`;
     log("INTERNAL", `${req.method} ${target.href} → ${hostUrl}`);
 
+    // Strip any sandbox-supplied token, then inject our own trusted one.
+    const internalReqHeaders = { ...req.headers, host: HOST_SERVER };
+    delete internalReqHeaders["x-vivi-internal-token"];
+    if (VIVI_INTERNAL_TOKEN) internalReqHeaders["x-vivi-internal-token"] = VIVI_INTERNAL_TOKEN;
+
     const proxyReq = http.request(hostUrl, {
       method: req.method,
-      headers: { ...req.headers, host: HOST_SERVER },
+      headers: internalReqHeaders,
     }, (proxyRes) => {
       res.writeHead(proxyRes.statusCode || 500, proxyRes.headers);
       proxyRes.pipe(res, { end: true });

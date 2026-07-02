@@ -10,7 +10,7 @@
  */
 
 import { WebSocketServer, WebSocket } from "ws";
-import type { Server } from "node:http";
+import type { Server, IncomingMessage } from "node:http";
 import { getContainerName, getSession } from "./container.js";
 import { ActivityMonitor } from "./monitor.js";
 import { runtime } from "./runtime.js";
@@ -173,11 +173,32 @@ function spawnPty(
   return pty;
 }
 
+// Reject cross-origin WebSocket upgrades. Browsers always send Origin on WS,
+// so a foreign site can't drive our terminals; non-browser clients (tests)
+// omit Origin and are allowed. Mirrors the HTTP CORS allowlist.
+function isAllowedWsOrigin(req: IncomingMessage): boolean {
+  const origin = req.headers.origin;
+  if (!origin) return true;
+  const port = process.env.PORT || "7700";
+  const allowed = new Set([
+    "http://localhost:5173", "http://127.0.0.1:5173",
+    `http://localhost:${port}`, `http://127.0.0.1:${port}`,
+  ]);
+  if (allowed.has(origin)) return true;
+  try { return !!req.headers.host && new URL(origin).host === req.headers.host; } catch { return false; }
+}
+
 export function attachWebSocketServer(server: Server) {
   const wss = new WebSocketServer({ noServer: true });
 
   server.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url || "/", `http://${req.headers.host}`);
+
+    const isViviWsPath = url.pathname === "/ws/terminal" || url.pathname === "/ws/monitor" || url.pathname === "/ws/docker";
+    if (isViviWsPath && !isAllowedWsOrigin(req)) {
+      socket.destroy();
+      return;
+    }
 
     if (url.pathname === "/ws/terminal") {
       wss.handleUpgrade(req, socket, head, (ws) => {

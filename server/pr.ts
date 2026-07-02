@@ -31,6 +31,15 @@ export interface PrRequest {
 const prRequests: PrRequest[] = [];
 const listeners: Set<(pr: PrRequest) => void> = new Set();
 
+// Conservative git-ref charset. Rejects shell/option-injection into host git
+// (leading "-", metacharacters, "..") since these flow to gh/git invocations.
+const GIT_REF = /^[A-Za-z0-9._/-]+$/;
+function assertSafeRef(ref: string, label: string): void {
+  if (typeof ref !== "string" || ref.length === 0 || ref.startsWith("-") || ref.includes("..") || !GIT_REF.test(ref)) {
+    throw new Error(`Invalid ${label}: ${ref}`);
+  }
+}
+
 function notify(pr: PrRequest) {
   for (const fn of listeners) {
     try { fn(pr); } catch (err: any) {
@@ -45,13 +54,16 @@ export function createPrRequest(sessionId: string, data: {
   branch: string;
   baseBranch: string;
 }): PrRequest {
+  const baseBranch = data.baseBranch || "main";
+  assertSafeRef(data.branch, "branch");
+  assertSafeRef(baseBranch, "baseBranch");
   const pr: PrRequest = {
     id: randomUUID(),
     sessionId,
     title: data.title,
     description: data.description,
     branch: data.branch,
-    baseBranch: data.baseBranch || "main",
+    baseBranch,
     status: "pending",
     createdAt: Date.now(),
   };

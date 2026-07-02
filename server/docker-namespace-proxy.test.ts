@@ -9,7 +9,7 @@ vi.mock("./paths.js", () => ({
   paths: () => ({ socketsDir: "/tmp/vivi-test-sockets" }),
 }));
 
-import { validateHostConfig, parseContainerScopedId, buildNestedContainerEnv } from "./docker-namespace-proxy.js";
+import { validateHostConfig, parseContainerScopedId, parseExecScopedId, classifyRequest, buildNestedContainerEnv } from "./docker-namespace-proxy.js";
 
 describe("validateHostConfig", () => {
   it("allows an ordinary container", () => {
@@ -122,5 +122,69 @@ describe("parseContainerScopedId", () => {
     expect(parseContainerScopedId("/v1.43/exec/xyz/start")).toBeNull();
     expect(parseContainerScopedId("/_ping")).toBeNull();
     expect(parseContainerScopedId("/v1.43/version")).toBeNull();
+  });
+
+  it("handles unversioned paths identically to versioned ones", () => {
+    expect(parseContainerScopedId("/containers/abc123/json")).toBe("abc123");
+    expect(parseContainerScopedId("/containers/abc123")).toBe("abc123");
+    expect(parseContainerScopedId("/containers/create")).toBeNull();
+    expect(parseContainerScopedId("/containers/json")).toBeNull();
+    expect(parseContainerScopedId("/v1.43.0/containers/abc123/stop")).toBe("abc123");
+  });
+});
+
+describe("parseExecScopedId", () => {
+  it("extracts the exec id, versioned or not", () => {
+    expect(parseExecScopedId("/v1.43/exec/xyz/start")).toBe("xyz");
+    expect(parseExecScopedId("/exec/xyz/start")).toBe("xyz");
+    expect(parseExecScopedId("/exec/xyz/json")).toBe("xyz");
+  });
+
+  it("returns null for non-exec paths", () => {
+    expect(parseExecScopedId("/v1.43/containers/xyz/exec")).toBeNull();
+    expect(parseExecScopedId("/v1.43/images/json")).toBeNull();
+  });
+});
+
+describe("classifyRequest (default-deny router)", () => {
+  it("intercepts create on both versioned and unversioned paths", () => {
+    expect(classifyRequest("POST", "/v1.43/containers/create")).toEqual({ kind: "create" });
+    expect(classifyRequest("POST", "/containers/create")).toEqual({ kind: "create" });
+    expect(classifyRequest("POST", "/containers/create?name=foo")).toEqual({ kind: "create" });
+  });
+
+  it("scopes container list on both path forms", () => {
+    expect(classifyRequest("GET", "/v1.43/containers/json")).toEqual({ kind: "list" });
+    expect(classifyRequest("GET", "/containers/json?all=1")).toEqual({ kind: "list" });
+  });
+
+  it("ownership-checks container ops regardless of version prefix", () => {
+    expect(classifyRequest("POST", "/v1.43/containers/abc/stop")).toEqual({ kind: "container", id: "abc" });
+    expect(classifyRequest("POST", "/containers/abc/stop")).toEqual({ kind: "container", id: "abc" });
+    expect(classifyRequest("DELETE", "/containers/abc")).toEqual({ kind: "container", id: "abc" });
+  });
+
+  it("ownership-checks exec ops regardless of version prefix", () => {
+    expect(classifyRequest("POST", "/v1.43/exec/xyz/start")).toEqual({ kind: "exec", id: "xyz" });
+    expect(classifyRequest("POST", "/exec/xyz/start")).toEqual({ kind: "exec", id: "xyz" });
+  });
+
+  it("permits known-safe endpoints", () => {
+    for (const p of ["/_ping", "/version", "/v1.43/version", "/info", "/v1.43/images/json",
+      "/v1.43/build?t=x", "/v1.43/volumes", "/v1.43/networks", "/containers/prune"]) {
+      expect(classifyRequest("GET", p).kind).toBe("passthrough");
+    }
+  });
+
+  it("default-denies unknown / unhandled endpoints", () => {
+    expect(classifyRequest("GET", "/v1.43/swarm").kind).toBe("deny");
+    expect(classifyRequest("POST", "/v1.43/plugins/pull").kind).toBe("deny");
+    expect(classifyRequest("GET", "/v1.43/secrets").kind).toBe("deny");
+    expect(classifyRequest("POST", "/containers/create/../../secrets").kind).toBe("deny");
+  });
+
+  it("denies wrong methods on create/json", () => {
+    expect(classifyRequest("GET", "/containers/create").kind).toBe("deny");
+    expect(classifyRequest("DELETE", "/containers/json").kind).toBe("deny");
   });
 });

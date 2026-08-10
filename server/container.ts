@@ -202,7 +202,7 @@ export async function startSession(config: SessionConfig): Promise<SessionState>
     fs.mkdirSync(sessionStagingDir, { recursive: true });
 
     const bundlePath = path.join(sessionStagingDir, "repo.bundle");
-    execSync("git bundle create " + JSON.stringify(bundlePath) + " --all", {
+    execFileSync("git", ["-c", `safe.directory=${repoPath}`, "bundle", "create", bundlePath, "--all"], {
       cwd: repoPath,
       stdio: "pipe",
       timeout: 60_000,
@@ -212,7 +212,7 @@ export async function startSession(config: SessionConfig): Promise<SessionState>
     let remoteUrl = precomputedRemoteUrl ?? "";
     if (!remoteUrl) {
       try {
-        const raw = execSync("git remote get-url origin", {
+        const raw = execFileSync("git", ["-c", `safe.directory=${repoPath}`, "remote", "get-url", "origin"], {
           cwd: repoPath, encoding: "utf-8", timeout: 5_000,
         }).trim();
         remoteUrl = normalizeRemoteToHttps(raw);
@@ -237,8 +237,8 @@ export async function startSession(config: SessionConfig): Promise<SessionState>
     } catch {
       // Fall back to repo-level config
       try {
-        hostGitName = execSync("git config user.name", { cwd: repoPath, encoding: "utf-8", timeout: 5_000 }).trim();
-        hostGitEmail = execSync("git config user.email", { cwd: repoPath, encoding: "utf-8", timeout: 5_000 }).trim();
+        hostGitName = execFileSync("git", ["-c", `safe.directory=${repoPath}`, "config", "user.name"], { cwd: repoPath, encoding: "utf-8", timeout: 5_000 }).trim();
+        hostGitEmail = execFileSync("git", ["-c", `safe.directory=${repoPath}`, "config", "user.email"], { cwd: repoPath, encoding: "utf-8", timeout: 5_000 }).trim();
       } catch {
         // No git identity configured — sandbox commits will use container defaults
         console.log(`[container:${id}] No git user identity found (global or repo-level)`);

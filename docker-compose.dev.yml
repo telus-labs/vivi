@@ -37,11 +37,15 @@ services:
       - VIVI_OPERATOR_USER=${VIVI_OPERATOR_USER:-vivi}
       - VIVI_OPERATOR_PASSWORD=${VIVI_OPERATOR_PASSWORD:-}
       - VIVI_TRUST_PROXY_HOPS=${VIVI_TRUST_PROXY_HOPS:-0}
+      - VIVI_FILE_BROWSER_ROOT=/host
+      - VIVI_FILE_BROWSER_UID=${VIVI_FILE_BROWSER_UID:-}
+      - VIVI_FILE_BROWSER_GID=${VIVI_FILE_BROWSER_GID:-}
     volumes:
       - .:/app
       - /app/node_modules
       - ./vivi-data:/app/data
       - ./vivi-data/config:/app/config
+      - ${VIVI_FILE_BROWSER_HOST_ROOT:-${PWD}}:/host
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       proxy:

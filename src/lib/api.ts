@@ -71,6 +71,38 @@ export interface FsEntry {
 export const completePath = (pathStr: string) =>
   request<{ dir: string; dirIsGit: boolean; results: FsEntry[] }>(`/fs/complete?path=${encodeURIComponent(pathStr)}`);
 
+export type HostFileKind = "directory" | "file" | "symlink";
+export interface HostFileEntry {
+  name: string;
+  path: string;
+  kind: HostFileKind;
+  isDirectory: boolean;
+  isGit: boolean;
+  isHidden: boolean;
+  isAccessible: boolean;
+  size: number | null;
+  modifiedAt: string | null;
+}
+export interface HostDirectoryListing {
+  root: string;
+  path: string;
+  parent: string | null;
+  isGit: boolean;
+  entries: HostFileEntry[];
+  truncated: boolean;
+}
+export const browseHostDirectory = (pathStr?: string, showHidden = false) => {
+  const params = new URLSearchParams();
+  if (pathStr) params.set("path", pathStr);
+  if (showHidden) params.set("hidden", "1");
+  return request<HostDirectoryListing>(`/fs/browse?${params.toString()}`);
+};
+export const createHostDirectory = (parentPath: string, name: string, initializeGit: boolean) =>
+  request<HostFileEntry>("/fs/directories", {
+    method: "POST",
+    body: JSON.stringify({ parentPath, name, initializeGit }),
+  });
+
 // Monitor
 export const getHealth = (sessionId?: string) =>
   request<import("./types").HealthSnapshot>(`/monitor/health${sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ""}`);

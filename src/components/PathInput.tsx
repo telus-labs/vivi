@@ -1,6 +1,7 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, Folder, FolderGit2, FolderOpen } from "lucide-react";
 import * as api from "../lib/api";
+import { HostFileBrowser } from "./HostFileBrowser";
 
 interface PathInputProps {
   value: string;
@@ -15,17 +16,11 @@ export function PathInput({ value, onChange, placeholder, className }: PathInput
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [dirIsGit, setDirIsGit] = useState(false);
-  const [browsing, setBrowsing] = useState(false);
-  const [browseEntries, setBrowseEntries] = useState<api.FsEntry[]>([]);
-  const [browsePath, setBrowsePath] = useState("~/");
-  const [browseLoading, setBrowseLoading] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
   const fetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // When true, skip the next debounced fetch (used after explicit selection)
   const skipNextFetch = useRef(false);
-  // Stale-response guard: only the most recently issued request can update state
   const requestIdRef = useRef(0);
 
   const fetchSuggestions = useCallback(async (path: string) => {
@@ -36,32 +31,25 @@ export function PathInput({ value, onChange, placeholder, className }: PathInput
       setOpen(false);
       return;
     }
-    const myReqId = ++requestIdRef.current;
+    const requestId = ++requestIdRef.current;
     setLoading(true);
     try {
       const { results, dirIsGit: isGit } = await api.completePath(path);
-      if (myReqId !== requestIdRef.current) return;
+      if (requestId !== requestIdRef.current) return;
       setSuggestions(results);
       setDirIsGit(isGit);
       setSelectedIdx(0);
-      // If the current directory is a git repo, close the dropdown —
-      // the user likely wants this directory, not its children
-      if (isGit) {
-        setOpen(false);
-      } else {
-        setOpen(results.length > 0);
-      }
+      setOpen(!isGit && results.length > 0);
     } catch {
-      if (myReqId !== requestIdRef.current) return;
+      if (requestId !== requestIdRef.current) return;
       setSuggestions([]);
       setDirIsGit(false);
       setOpen(false);
     } finally {
-      if (myReqId === requestIdRef.current) setLoading(false);
+      if (requestId === requestIdRef.current) setLoading(false);
     }
   }, []);
 
-  // Debounced fetch on value change
   useEffect(() => {
     if (fetchTimer.current) clearTimeout(fetchTimer.current);
     if (skipNextFetch.current) {
@@ -72,27 +60,8 @@ export function PathInput({ value, onChange, placeholder, className }: PathInput
     return () => { if (fetchTimer.current) clearTimeout(fetchTimer.current); };
   }, [value, fetchSuggestions]);
 
-  // Close browse panel on outside click or Escape
   useEffect(() => {
-    if (!browsing) return;
-    const onMouseDown = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setBrowsing(false);
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setBrowsing(false);
-    };
-    document.addEventListener("mousedown", onMouseDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", onMouseDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [browsing]);
-
-  // Scroll selected item into view
-  useEffect(() => {
-    if (!listRef.current) return;
-    const item = listRef.current.children[selectedIdx] as HTMLElement | undefined;
+    const item = listRef.current?.children[selectedIdx] as HTMLElement | undefined;
     item?.scrollIntoView({ block: "nearest" });
   }, [selectedIdx]);
 
@@ -100,261 +69,106 @@ export function PathInput({ value, onChange, placeholder, className }: PathInput
     const newPath = entry.path + "/";
     skipNextFetch.current = true;
     onChange(newPath);
-    // Immediately fetch next level
     fetchSuggestions(newPath);
     inputRef.current?.focus();
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
+  const handleKeyDown = (event: React.KeyboardEvent) => {
     if (!open || suggestions.length === 0) {
-      // Tab with no dropdown: try to complete common prefix
-      if (e.key === "Tab") {
-        e.preventDefault();
+      if (event.key === "Tab") {
+        event.preventDefault();
         fetchSuggestions(value);
       }
-      // Allow re-opening the dropdown if the path is a git repo and user presses down
-      if (e.key === "ArrowDown" && dirIsGit && suggestions.length > 0) {
-        e.preventDefault();
+      if (event.key === "ArrowDown" && suggestions.length > 0) {
+        event.preventDefault();
         setOpen(true);
       }
       return;
     }
 
-    switch (e.key) {
-      case "Tab": {
-        e.preventDefault();
-        if (suggestions.length === 1) {
-          // Single match: accept it
-          accept(suggestions[0]);
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setSelectedIdx((index) => Math.min(index + 1, suggestions.length - 1));
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setSelectedIdx((index) => Math.max(index - 1, 0));
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      accept(suggestions[selectedIdx]);
+    } else if (event.key === "Escape") {
+      setOpen(false);
+    } else if (event.key === "Tab") {
+      event.preventDefault();
+      if (suggestions.length === 1) {
+        accept(suggestions[0]);
+      } else {
+        const prefix = longestCommonPrefix(suggestions.map((entry) => entry.path));
+        if (prefix.length > value.replace(/\/$/, "").length) {
+          skipNextFetch.current = true;
+          onChange(prefix);
+          fetchSuggestions(prefix);
         } else {
-          // Multiple matches: complete to longest common prefix
-          const lcp = longestCommonPrefix(suggestions.map((s) => s.path));
-          if (lcp.length > value.replace(/\/$/, "").length) {
-            skipNextFetch.current = true;
-            onChange(lcp);
-            fetchSuggestions(lcp);
-          } else {
-            // Already at LCP — cycle through suggestions
-            accept(suggestions[selectedIdx]);
-          }
-        }
-        break;
-      }
-      case "ArrowDown":
-        e.preventDefault();
-        setSelectedIdx((i) => Math.min(i + 1, suggestions.length - 1));
-        break;
-      case "ArrowUp":
-        e.preventDefault();
-        setSelectedIdx((i) => Math.max(i - 1, 0));
-        break;
-      case "Enter":
-        if (open && suggestions.length > 0) {
-          e.preventDefault();
           accept(suggestions[selectedIdx]);
         }
-        break;
-      case "Escape":
-        setOpen(false);
-        break;
+      }
     }
-  };
-
-  // --- Browse mode ---
-  const fetchBrowseEntries = useCallback(async (dirPath: string) => {
-    setBrowseLoading(true);
-    try {
-      const { results } = await api.completePath(dirPath);
-      setBrowseEntries(results);
-    } catch {
-      setBrowseEntries([]);
-    } finally {
-      setBrowseLoading(false);
-    }
-  }, []);
-
-  const openBrowser = () => {
-    const startPath = value || "~/";
-    setBrowsePath(startPath);
-    setBrowsing(true);
-    fetchBrowseEntries(startPath);
-  };
-
-  const navigateTo = (dirPath: string) => {
-    const newPath = dirPath + "/";
-    setBrowsePath(newPath);
-    fetchBrowseEntries(newPath);
-  };
-
-  const navigateUp = () => {
-    // Go up one directory
-    const trimmed = browsePath.replace(/\/+$/, "");
-    const parent = trimmed.substring(0, trimmed.lastIndexOf("/") + 1) || "/";
-    setBrowsePath(parent);
-    fetchBrowseEntries(parent);
-  };
-
-  const selectBrowsePath = (entry: api.FsEntry) => {
-    skipNextFetch.current = true;
-    onChange(entry.path + "/");
-    setDirIsGit(true);
-    setBrowsing(false);
-    setOpen(false);
-    setSuggestions([]);
   };
 
   return (
-    <div className="relative" ref={containerRef}>
-      <FolderGit2 className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 z-10" />
+    <div className="relative">
+      <FolderGit2 className="absolute left-3 top-1/2 z-10 h-4 w-4 -translate-y-1/2 text-gray-500" />
       <input
         ref={inputRef}
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(event) => onChange(event.target.value)}
         onKeyDown={handleKeyDown}
         onFocus={() => { if (suggestions.length > 0 && !dirIsGit) setOpen(true); }}
-        onBlur={() => {
-          // Delay so click on suggestion registers
-          setTimeout(() => setOpen(false), 150);
-        }}
+        onBlur={() => window.setTimeout(() => setOpen(false), 150)}
         placeholder={placeholder}
         autoComplete="off"
         spellCheck={false}
         className={className}
-        style={dirIsGit ? { paddingRight: "6rem" } : undefined}
+        style={{ paddingRight: dirIsGit && value ? "8.5rem" : "3.25rem" }}
       />
-      {/* Git repo confirmed badge */}
+
       {dirIsGit && value && (
-        <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1 px-2 py-0.5 rounded-md bg-green-500/15 border border-green-500/30">
-          <Check className="w-3.5 h-3.5 text-green-400" />
+        <div className="absolute right-11 top-1/2 flex -translate-y-1/2 items-center gap-1 rounded-md border border-green-500/30 bg-green-500/15 px-2 py-0.5">
+          <Check className="h-3.5 w-3.5 text-green-400" />
           <span className="text-[10px] font-medium text-green-400">Git repo</span>
         </div>
       )}
-      {!dirIsGit && (
-        <button
-          type="button"
-          onClick={openBrowser}
-          className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-md text-gray-500 hover:text-white hover:bg-[var(--color-surface-raised)] transition-colors"
-          title="Browse folders"
-        >
-          <FolderOpen className="w-4 h-4" />
-        </button>
-      )}
+      <button type="button" onClick={() => { setOpen(false); setPickerOpen(true); }} className="absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-md text-gray-500 transition-colors hover:bg-[var(--color-surface-raised)] hover:text-white" title="Browse host" aria-label="Browse host folders">
+        <FolderOpen className="h-4 w-4" />
+      </button>
       {loading && !dirIsGit && (
-        <div className="absolute right-9 top-1/2 -translate-y-1/2">
-          <div className="w-3 h-3 border border-gray-500 border-t-gray-300 rounded-full animate-spin" />
-        </div>
+        <div className="absolute right-11 top-1/2 h-3 w-3 -translate-y-1/2 animate-spin rounded-full border border-gray-500 border-t-gray-300" />
       )}
 
-      {open && suggestions.length > 0 && !browsing && (
-        <div
-          ref={listRef}
-          className="absolute left-0 right-0 top-full mt-1 max-h-56 overflow-auto bg-[var(--color-surface-overlay)] border border-[var(--color-border)] rounded-lg shadow-xl z-50"
-        >
-          {suggestions.map((entry, i) => (
-            <button
-              key={entry.path}
-              type="button"
-              onMouseDown={(e) => {
-                e.preventDefault();
-                accept(entry);
-              }}
-              onMouseEnter={() => setSelectedIdx(i)}
-              className={`w-full flex items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors ${
-                i === selectedIdx
-                  ? "bg-[var(--color-accent-muted)] text-white"
-                  : "text-gray-300 hover:bg-[var(--color-surface-raised)]"
-              }`}
-            >
-              {entry.isGit ? (
-                <FolderGit2 className="w-3.5 h-3.5 text-[var(--color-accent)] shrink-0" />
-              ) : (
-                <Folder className="w-3.5 h-3.5 text-gray-500 shrink-0" />
-              )}
-              <span className="font-mono truncate">
-                {entry.name}
-                {entry.isDir && "/"}
-              </span>
-              {entry.isGit && (
-                <span className="ml-auto text-[10px] text-[var(--color-accent)] bg-[var(--color-accent)]/10 px-1.5 py-0.5 rounded shrink-0">
-                  git
-                </span>
-              )}
+      {open && suggestions.length > 0 && (
+        <div ref={listRef} className="absolute left-0 right-0 top-full z-50 mt-1 max-h-56 overflow-auto rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-overlay)] shadow-xl">
+          {suggestions.map((entry, index) => (
+            <button key={entry.path} type="button" onMouseDown={(event) => { event.preventDefault(); accept(entry); }} onMouseEnter={() => setSelectedIdx(index)} className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${index === selectedIdx ? "bg-[var(--color-accent-muted)] text-white" : "text-gray-300 hover:bg-[var(--color-surface-raised)]"}`}>
+              {entry.isGit ? <FolderGit2 className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent)]" /> : <Folder className="h-3.5 w-3.5 shrink-0 text-gray-500" />}
+              <span className="truncate font-mono">{entry.name}/</span>
+              {entry.isGit && <span className="ml-auto shrink-0 rounded bg-[var(--color-accent)]/10 px-1.5 py-0.5 text-[10px] text-[var(--color-accent)]">git</span>}
             </button>
           ))}
         </div>
       )}
 
-      {/* Folder browser modal */}
-      {browsing && (
-        <div className="absolute left-0 right-0 top-full mt-1 bg-[var(--color-surface-overlay)] border border-[var(--color-border)] rounded-lg shadow-xl z-50 overflow-hidden">
-          {/* Header */}
-          <div className="flex items-center gap-2 px-3 py-2 border-b border-[var(--color-border)] bg-[var(--color-surface)]">
-            <button
-              type="button"
-              onClick={navigateUp}
-              className="p-1 rounded text-gray-400 hover:text-white hover:bg-[var(--color-surface-raised)] transition-colors text-xs font-medium"
-              title="Go up"
-            >
-              ↑ Up
-            </button>
-            <span className="text-xs font-mono text-gray-400 truncate flex-1">{browsePath}</span>
-            <button
-              type="button"
-              onClick={() => setBrowsing(false)}
-              className="text-xs text-gray-500 hover:text-white transition-colors"
-            >
-              ✕
-            </button>
-          </div>
-
-          {/* Entries */}
-          <div className="max-h-64 overflow-auto">
-            {browseLoading ? (
-              <div className="flex items-center justify-center py-6">
-                <div className="w-4 h-4 border-2 border-gray-500 border-t-gray-300 rounded-full animate-spin" />
-              </div>
-            ) : browseEntries.length === 0 ? (
-              <div className="text-center py-6 text-xs text-gray-500">No subdirectories</div>
-            ) : (
-              browseEntries.map((entry) => (
-                <div
-                  key={entry.path}
-                  className="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-300 hover:bg-[var(--color-surface-raised)] transition-colors group"
-                >
-                  <button
-                    type="button"
-                    onClick={() => navigateTo(entry.path)}
-                    className="flex items-center gap-2 flex-1 min-w-0 text-left"
-                  >
-                    {entry.isGit ? (
-                      <FolderGit2 className="w-3.5 h-3.5 text-[var(--color-accent)] shrink-0" />
-                    ) : (
-                      <Folder className="w-3.5 h-3.5 text-gray-500 shrink-0" />
-                    )}
-                    <span className="font-mono truncate">
-                      {entry.name}/
-                    </span>
-                    {entry.isGit && (
-                      <span className="text-[10px] text-[var(--color-accent)] bg-[var(--color-accent)]/10 px-1.5 py-0.5 rounded shrink-0">
-                        git
-                      </span>
-                    )}
-                  </button>
-                  {entry.isGit && (
-                    <button
-                      type="button"
-                      onClick={() => selectBrowsePath(entry)}
-                      className="text-[10px] font-medium px-2 py-1 rounded bg-[var(--color-accent-muted)] text-white hover:bg-[var(--color-accent)] transition-colors shrink-0 opacity-0 group-hover:opacity-100"
-                    >
-                      Select
-                    </button>
-                  )}
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      )}
+      <HostFileBrowser
+        open={pickerOpen}
+        initialPath={value || undefined}
+        onClose={() => setPickerOpen(false)}
+        onSelect={(path) => {
+          skipNextFetch.current = true;
+          onChange(path);
+          setDirIsGit(true);
+          setSuggestions([]);
+          setOpen(false);
+          setPickerOpen(false);
+        }}
+      />
     </div>
   );
 }
@@ -362,8 +176,8 @@ export function PathInput({ value, onChange, placeholder, className }: PathInput
 function longestCommonPrefix(strings: string[]): string {
   if (strings.length === 0) return "";
   let prefix = strings[0];
-  for (let i = 1; i < strings.length; i++) {
-    while (!strings[i].startsWith(prefix)) {
+  for (let index = 1; index < strings.length; index++) {
+    while (!strings[index].startsWith(prefix)) {
       prefix = prefix.slice(0, -1);
       if (!prefix) return "";
     }

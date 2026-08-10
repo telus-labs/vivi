@@ -99,6 +99,12 @@ Restrict the host firewall to the VPN interface as a second boundary.
 If Vivi sits behind a trusted reverse proxy, set `VIVI_TRUST_PROXY_HOPS` to
 the exact number of proxy hops so rate limiting uses the real client address.
 
+The project picker includes a bounded host file browser with folder creation.
+Container deployments can set `VIVI_FILE_BROWSER_HOST_ROOT` to the host folder
+that should appear at `/host` in Vivi. Traversal and symlinks escaping that root
+are rejected. Set `VIVI_FILE_BROWSER_UID` and `VIVI_FILE_BROWSER_GID` when new
+folders should use a specific host ownership.
+
 Config and data live in platform-native locations by default:
 
 | OS | Config | Data |

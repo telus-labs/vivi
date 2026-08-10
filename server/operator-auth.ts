@@ -1,6 +1,11 @@
 import crypto from "node:crypto";
 import type express from "express";
-import type { IncomingHttpHeaders, ServerResponse } from "node:http";
+import type { IncomingHttpHeaders } from "node:http";
+
+type UpgradeSocket = {
+  write(chunk: string): unknown;
+  destroy(): unknown;
+};
 
 const USERNAME = process.env.VIVI_OPERATOR_USER || "vivi";
 const PASSWORD = process.env.VIVI_OPERATOR_PASSWORD || "";
@@ -38,16 +43,13 @@ export function operatorAuthMiddleware(req: express.Request, res: express.Respon
   res.status(401).json({ error: "Authentication required" });
 }
 
-export function rejectUnauthorizedUpgrade(headers: IncomingHttpHeaders, socket: ServerResponse | import("node:net").Socket): boolean {
+export function rejectUnauthorizedUpgrade(headers: IncomingHttpHeaders, socket: UpgradeSocket): boolean {
   if (isOperatorAuthorized(headers)) return false;
-  if ("write" in socket) {
-    socket.write(
-      "HTTP/1.1 401 Unauthorized\r\n" +
-      'WWW-Authenticate: Basic realm="Vivi", charset="UTF-8"\r\n' +
-      "Connection: close\r\nContent-Length: 0\r\n\r\n",
-    );
-  }
-  if ("destroy" in socket) socket.destroy();
+  socket.write(
+    "HTTP/1.1 401 Unauthorized\r\n" +
+    'WWW-Authenticate: Basic realm="Vivi", charset="UTF-8"\r\n' +
+    "Connection: close\r\nContent-Length: 0\r\n\r\n",
+  );
+  socket.destroy();
   return true;
 }
-

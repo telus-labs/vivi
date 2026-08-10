@@ -741,7 +741,19 @@ export function App() {
         <div className="overflow-hidden flex flex-col" style={isMobile ? { flex: 1 } : tab ? { width: `${panelWidth}%` } : { flex: 1 }}>
           {loginMode ? (
             <div className="flex-1 flex flex-col relative">
-              <div className="absolute top-2 right-2 z-10 flex items-center gap-1.5 px-2.5 py-1 bg-yellow-500/20 border border-yellow-500/40 rounded text-xs font-medium text-yellow-400">{loginMode === "codex" ? "CODEX DEVICE LOGIN" : "LOGIN FLOW: ON HOST"}</div>
+              <div className="absolute top-2 right-2 z-10 flex items-center gap-2 px-2.5 py-1 bg-yellow-500/20 border border-yellow-500/40 rounded text-xs font-medium text-yellow-400">
+                <span>{loginMode === "codex" ? "CODEX DEVICE LOGIN" : "LOGIN FLOW: ON HOST"}</span>
+                {loginMode === "codex" && (
+                  <a
+                    href="https://auth.openai.com/codex/device"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="underline underline-offset-2 text-yellow-200 hover:text-white"
+                  >
+                    Open sign-in page
+                  </a>
+                )}
+              </div>
               <Terminal mode={loginMode === "codex" ? "codex-login" : "setup-token"} className="flex-1" onDisconnected={async () => { if (loginMode === "claude") { try { const result = await api.extractToken(); if (result.ok) setSecretsRefreshKey((k) => k + 1); } catch (err) { console.warn("extractToken: failed to extract token on disconnect", err); } } else { setSecretsRefreshKey((k) => k + 1); } setLoginMode(null); setTab("secrets"); }} />
             </div>
           ) : showTerminal && isRunning ? (

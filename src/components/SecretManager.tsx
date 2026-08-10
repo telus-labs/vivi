@@ -4,7 +4,7 @@ import type { SecretPublic, SecretRequest } from "../lib/types";
 import * as api from "../lib/api";
 
 interface SecretManagerProps {
-  onLoginStart?: () => void;
+  onLoginStart?: (agent: "claude" | "codex") => void;
   refreshKey?: number;
   pendingRequests?: SecretRequest[];
   onDismissRequest?: (id: string) => void;
@@ -12,6 +12,7 @@ interface SecretManagerProps {
 
 export function SecretManager({ onLoginStart, refreshKey, pendingRequests = [], onDismissRequest }: SecretManagerProps) {
   const [secrets, setSecrets] = useState<SecretPublic[]>([]);
+  const [codexAuthenticated, setCodexAuthenticated] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({
     name: "",
@@ -36,11 +37,26 @@ export function SecretManager({ onLoginStart, refreshKey, pendingRequests = [], 
 
   const refresh = useCallback(async () => {
     try {
-      setSecrets(await api.listSecrets());
+      const [nextSecrets, codexStatus] = await Promise.all([
+        api.listSecrets(),
+        api.getCodexAuthStatus(),
+      ]);
+      setSecrets(nextSecrets);
+      setCodexAuthenticated(codexStatus.authenticated);
     } catch (e: any) {
       setError(e.message);
     }
   }, []);
+
+  const handleCodexLogout = async () => {
+    setError(null);
+    try {
+      await api.clearCodexAuth();
+      await refresh();
+    } catch (err: any) {
+      setError(err.message);
+    }
+  };
 
   useEffect(() => { refresh(); }, [refresh, refreshKey]);
 
@@ -212,12 +228,47 @@ export function SecretManager({ onLoginStart, refreshKey, pendingRequests = [], 
                 Your token is routed through the secure proxy — it never enters the sandbox.
               </p>
               <button
-                onClick={onLoginStart}
+                onClick={() => onLoginStart?.("claude")}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-[var(--color-accent-muted)] hover:bg-[var(--color-accent)] text-white rounded transition-colors"
               >
                 <LogIn className="w-3.5 h-3.5" />
                 Set Up Token
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {!showForm && (
+        <div className="p-4 bg-[var(--color-surface-raised)] rounded-lg border border-[var(--color-accent-muted)]/30">
+          <div className="flex items-start gap-3">
+            <LogIn className="w-5 h-5 text-[var(--color-accent)] mt-0.5 shrink-0" />
+            <div className="space-y-2 flex-1">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-sm font-medium">Login with ChatGPT</p>
+                {codexAuthenticated && <span className="text-xs font-medium text-green-400">Connected</span>}
+              </div>
+              <p className="text-xs text-gray-400">
+                {codexAuthenticated
+                  ? "Codex account auth is applied automatically to every new Codex sandbox."
+                  : "Use a short device code to connect your ChatGPT account once. Vivi securely reuses it for future Codex sessions."}
+              </p>
+              {codexAuthenticated ? (
+                <button
+                  onClick={handleCodexLogout}
+                  className="px-3 py-1.5 text-sm border border-[var(--color-border)] hover:border-red-400 text-gray-300 hover:text-red-300 rounded transition-colors"
+                >
+                  Disconnect
+                </button>
+              ) : (
+                <button
+                  onClick={() => onLoginStart?.("codex")}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-[var(--color-accent-muted)] hover:bg-[var(--color-accent)] text-white rounded transition-colors"
+                >
+                  <LogIn className="w-3.5 h-3.5" />
+                  Sign in to Codex
+                </button>
+              )}
             </div>
           </div>
         </div>

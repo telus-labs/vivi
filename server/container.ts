@@ -27,6 +27,7 @@ import { runtime } from "./runtime.js";
 import * as sandboxImages from "./sandbox-images.js";
 import { paths, toHostPath } from "./paths.js";
 import { getAgent, isAgentId, type AgentId } from "./agents.js";
+import { getCodexAuthStatus, getHostCodexAuthFile } from "./codex-auth.js";
 
 /**
  * Normalize a git remote URL to HTTPS so the in-container MITM proxy can
@@ -328,6 +329,9 @@ export async function startSession(config: SessionConfig): Promise<SessionState>
       "-v", `vivi-workspace-${id}:/workspace`,
       ...dockerSocketFlags,
       ...(profileDir ? ["-v", `${toHostPath(profileDir)}:${agent.profileMount}:ro`] : []),
+      ...(agent.id === "codex" && getCodexAuthStatus().authenticated
+        ? ["-v", `${getHostCodexAuthFile()}:/home/agent/.codex/auth.json`]
+        : []),
       "-e", "HTTP_PROXY=http://proxy:7443",
       "-e", "HTTPS_PROXY=http://proxy:7443",
       "-e", "http_proxy=http://proxy:7443",

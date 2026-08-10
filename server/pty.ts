@@ -22,6 +22,9 @@ import { subscribeSession } from "./docker-events.js";
 import { onSecretRequestUpdate } from "./secret-requests.js";
 import type { ChildProcess } from "node:child_process";
 import { rejectUnauthorizedUpgrade } from "./operator-auth.js";
+import * as codexAuth from "./codex-auth.js";
+import * as sandboxImages from "./sandbox-images.js";
+import { toHostPath } from "./paths.js";
 
 // Per-session activity monitors
 const monitors: Map<string, ActivityMonitor> = new Map();
@@ -224,7 +227,7 @@ export function attachWebSocketServer(server: Server) {
 function handleTerminalConnection(ws: WebSocket, url: URL) {
   const cols = parseInt(url.searchParams.get("cols") || "120", 10);
   const rows = parseInt(url.searchParams.get("rows") || "40", 10);
-  const mode = url.searchParams.get("mode") || "agent"; // "agent", "shell", or "setup-token"
+  const mode = url.searchParams.get("mode") || "agent"; // "agent", "shell", "setup-token", or "codex-login"
   const sessionId = url.searchParams.get("sessionId") || "";
 
   const ptySessionId = `term-${++sessionCounter}`;
@@ -359,6 +362,17 @@ function handleTerminalConnection(ws: WebSocket, url: URL) {
     resetCapture();
     cmd = "claude";
     args = ["setup-token"];
+  } else if (mode === "codex-login") {
+    const authDir = codexAuth.getCodexAuthDir();
+    cmd = runtime.bin;
+    args = [
+      "run", "--rm", "-it",
+      "-v", `${toHostPath(authDir)}:/home/agent/.codex`,
+      "--entrypoint", "/bin/sh",
+      sandboxImages.getDefault().image,
+      "-lc",
+      "chown -R agent:agent /home/agent/.codex && chmod 700 /home/agent/.codex && exec gosu agent codex login --device-auth",
+    ];
   } else {
     // shell
     if (!sessionId) {
@@ -392,6 +406,9 @@ function handleTerminalConnection(ws: WebSocket, url: URL) {
       },
       // onExit
       (exitCode: number) => {
+        if (mode === "codex-login" && exitCode === 0 && !codexAuth.secureCodexAuthFile()) {
+          console.warn("[auth] Codex login exited successfully but no auth.json was created");
+        }
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(`\r\n[Process exited with code ${exitCode}]\r\n`);
           ws.close();

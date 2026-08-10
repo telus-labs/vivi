@@ -79,7 +79,7 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [diffPr, setDiffPr] = useState<{ id: string; title: string } | null>(null);
-  const [loginMode, setLoginMode] = useState(false);
+  const [loginMode, setLoginMode] = useState<"claude" | "codex" | null>(null);
   const [secretsRefreshKey, setSecretsRefreshKey] = useState(0);
   const monitorWsRef = useRef<WebSocket | null>(null);
   const [updateAvailable, setUpdateAvailable] = useState<api.UpdateStatus | null>(null);
@@ -741,8 +741,8 @@ export function App() {
         <div className="overflow-hidden flex flex-col" style={isMobile ? { flex: 1 } : tab ? { width: `${panelWidth}%` } : { flex: 1 }}>
           {loginMode ? (
             <div className="flex-1 flex flex-col relative">
-              <div className="absolute top-2 right-2 z-10 flex items-center gap-1.5 px-2.5 py-1 bg-yellow-500/20 border border-yellow-500/40 rounded text-xs font-medium text-yellow-400">LOGIN FLOW: ON HOST</div>
-              <Terminal mode="setup-token" className="flex-1" onDisconnected={async () => { try { const result = await api.extractToken(); if (result.ok) setSecretsRefreshKey((k) => k + 1); } catch (err) { console.warn("extractToken: failed to extract token on disconnect", err); } setLoginMode(false); setTab("secrets"); }} />
+              <div className="absolute top-2 right-2 z-10 flex items-center gap-1.5 px-2.5 py-1 bg-yellow-500/20 border border-yellow-500/40 rounded text-xs font-medium text-yellow-400">{loginMode === "codex" ? "CODEX DEVICE LOGIN" : "LOGIN FLOW: ON HOST"}</div>
+              <Terminal mode={loginMode === "codex" ? "codex-login" : "setup-token"} className="flex-1" onDisconnected={async () => { if (loginMode === "claude") { try { const result = await api.extractToken(); if (result.ok) setSecretsRefreshKey((k) => k + 1); } catch (err) { console.warn("extractToken: failed to extract token on disconnect", err); } } else { setSecretsRefreshKey((k) => k + 1); } setLoginMode(null); setTab("secrets"); }} />
             </div>
           ) : showTerminal && isRunning ? (
             <Terminal sessionId={activeSessionId!} mode="agent" className="flex-1" />
@@ -1040,7 +1040,7 @@ export function App() {
                   <div className="flex-1 overflow-auto p-5">
                     {tab === "secrets" && (
                       <div className="space-y-6">
-                        <SecretManager onLoginStart={() => setLoginMode(true)} refreshKey={secretsRefreshKey} pendingRequests={secretRequests.filter((r) => r.status === "pending")} onDismissRequest={(id) => { api.dismissSecretRequest(id); setSecretRequests((prev) => prev.map((r) => r.id === id ? { ...r, status: "dismissed" as const } : r)); }} />
+                        <SecretManager onLoginStart={setLoginMode} refreshKey={secretsRefreshKey} pendingRequests={secretRequests.filter((r) => r.status === "pending")} onDismissRequest={(id) => { api.dismissSecretRequest(id); setSecretRequests((prev) => prev.map((r) => r.id === id ? { ...r, status: "dismissed" as const } : r)); }} />
                         <div className="pt-6 border-t border-[var(--color-border)]">
                           <GitHubSettings onStatusChange={(s) => setGithubConfigured(s.configured)} />
                         </div>
@@ -1102,7 +1102,7 @@ export function App() {
               <div className="flex-1 overflow-auto p-4">
                 {mobileTab === "secrets" && (
                   <div className="space-y-6">
-                    <SecretManager onLoginStart={() => setLoginMode(true)} refreshKey={secretsRefreshKey} pendingRequests={secretRequests.filter((r) => r.status === "pending")} onDismissRequest={(id) => { api.dismissSecretRequest(id); setSecretRequests((prev) => prev.map((r) => r.id === id ? { ...r, status: "dismissed" as const } : r)); }} />
+                    <SecretManager onLoginStart={setLoginMode} refreshKey={secretsRefreshKey} pendingRequests={secretRequests.filter((r) => r.status === "pending")} onDismissRequest={(id) => { api.dismissSecretRequest(id); setSecretRequests((prev) => prev.map((r) => r.id === id ? { ...r, status: "dismissed" as const } : r)); }} />
                     <div className="pt-6 border-t border-[var(--color-border)]">
                       <GitHubSettings onStatusChange={(s) => setGithubConfigured(s.configured)} />
                     </div>

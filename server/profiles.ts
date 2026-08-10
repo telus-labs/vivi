@@ -99,7 +99,8 @@ export function saveProfileFromContainer(profileId: string, containerName: strin
   // Use `docker exec tar` instead of `docker cp` because `docker cp` fails when
   // the container has a Unix socket bind-mounted (/var/run/docker.sock) — Docker
   // walks the overlay merged layer and errors with "not a directory".
-  execSync(`${runtime.bin} exec ${containerName} tar cf - -C /home/agent/${agent.profileDirectory} . | tar xf - -C ${JSON.stringify(dir)}`, {
+  const excludeAuth = profile.agentId === "codex" ? " --exclude=./auth.json" : "";
+  execSync(`${runtime.bin} exec ${containerName} tar${excludeAuth} cf - -C /home/agent/${agent.profileDirectory} . | tar xf - -C ${JSON.stringify(dir)}`, {
     stdio: "pipe",
     timeout: 30_000,
   });

@@ -60,6 +60,10 @@ export const extractToken = () =>
   request<{ ok: boolean; secret?: import("./types").SecretPublic; error?: string }>("/auth/extract-token", {
     method: "POST",
   });
+export const getCodexAuthStatus = () =>
+  request<{ authenticated: boolean }>("/auth/codex/status");
+export const clearCodexAuth = () =>
+  request<{ ok: boolean }>("/auth/codex", { method: "DELETE" });
 
 // Filesystem completion
 export interface FsEntry {

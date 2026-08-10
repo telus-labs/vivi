@@ -16,7 +16,10 @@ case "$agent" in
     exec claude "${args[@]}"
     ;;
   codex)
-    if [ -n "${OPENAI_API_KEY:-}" ]; then
+    # Prefer host-managed ChatGPT auth; retain API-key auth as a fallback.
+    if codex login status >/dev/null 2>&1; then
+      :
+    elif [ -n "${OPENAI_API_KEY:-}" ]; then
       # Persist only Vivi's dummy placeholder; the proxy retains the real key.
       printf '%s' "$OPENAI_API_KEY" | codex login --with-api-key >/dev/null
     fi
@@ -29,4 +32,3 @@ case "$agent" in
     exit 64
     ;;
 esac
-

@@ -25,6 +25,7 @@ import * as sandboxImages from "./sandbox-images.js";
 import * as container from "./container.js";
 import { restoreSessions } from "./container.js";
 import * as auth from "./auth.js";
+import * as codexAuth from "./codex-auth.js";
 import * as gitPolicy from "./git-policy.js";
 import * as pr from "./pr.js";
 import * as ports from "./ports.js";
@@ -479,6 +480,19 @@ app.post("/api/auth/extract-token", limiter("auth"), (_req, res) => {
     res.json({ ok: true, secret: s });
   } else {
     res.json({ ok: false, error: "No token captured. Did setup-token complete successfully?" });
+  }
+});
+
+app.get("/api/auth/codex/status", limiter("auth"), (_req, res) => {
+  res.json(codexAuth.getCodexAuthStatus());
+});
+
+app.delete("/api/auth/codex", limiter("auth"), (_req, res) => {
+  try {
+    codexAuth.clearCodexAuth();
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : "Unable to remove Codex authentication" });
   }
 });
 

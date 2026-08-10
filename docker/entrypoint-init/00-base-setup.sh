@@ -68,7 +68,12 @@ AGENT_CONFIG_DIR="/home/agent/.${VIVI_AGENT:-claude}"
 if [ -d /agent-profile ] && [ "$(ls -A /agent-profile 2>/dev/null)" ]; then
   echo "[sandbox] Loading ${VIVI_AGENT:-claude} profile into ${AGENT_CONFIG_DIR}..."
   mkdir -p "$AGENT_CONFIG_DIR"
-  cp -rT /agent-profile "$AGENT_CONFIG_DIR"
+  if [ "${VIVI_AGENT:-claude}" = "codex" ]; then
+    # Account credentials are managed globally by Vivi and mounted separately.
+    tar -C /agent-profile --exclude='./auth.json' -cf - . | tar -C "$AGENT_CONFIG_DIR" -xf -
+  else
+    cp -rT /agent-profile "$AGENT_CONFIG_DIR"
+  fi
   echo "[sandbox] Profile loaded"
 fi
 

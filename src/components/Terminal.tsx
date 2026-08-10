@@ -11,8 +11,8 @@ import { getWsBase } from "../lib/backend";
 import type { Terminal as GhosttyTerminal } from "ghostty-web";
 
 interface TerminalProps {
-  /** "agent" for the session's selected coding agent, "shell" for bash, or Claude token setup. */
-  mode?: "agent" | "shell" | "setup-token";
+  /** Session agent/shell, Claude token setup, or Codex device login. */
+  mode?: "agent" | "shell" | "setup-token" | "codex-login";
   /** Session ID for multi-session support */
   sessionId?: string;
   className?: string;

@@ -26,6 +26,7 @@ import * as profiles from "./profiles.js";
 import { runtime } from "./runtime.js";
 import * as sandboxImages from "./sandbox-images.js";
 import { paths, toHostPath } from "./paths.js";
+import { getAgent, isAgentId, type AgentId } from "./agents.js";
 
 /**
  * Normalize a git remote URL to HTTPS so the in-container MITM proxy can
@@ -57,6 +58,7 @@ export interface SessionConfig {
   attachTo?: string;
   profileId?: string;
   imageId?: number;
+  agentId?: AgentId;
   /**
    * When set, Vivi clones this GitHub repo into the session's staging dir
    * (using the host-wide PAT configured in the Secrets tab) and uses that
@@ -80,6 +82,8 @@ export interface SessionState {
   containerRef: string;
   error: string | null;
   startedAt: string | null;
+  agentId: AgentId;
+  taskDescription: string | null;
 }
 
 // In bare/dev mode (`bun dev`), the server shells out to compose to launch
@@ -123,6 +127,11 @@ export async function startSession(config: SessionConfig): Promise<SessionState>
     throw new Error("repoPath or githubRepo is required when creating a new container");
   }
 
+  if (config.agentId !== undefined && !isAgentId(config.agentId)) {
+    throw new Error(`Unsupported agent '${String(config.agentId)}'. Choose claude or codex.`);
+  }
+  const agent = getAgent(config.agentId);
+
   if (config.githubRepo && !github.getAuth()) {
     throw new Error(
       `GitHub is not connected\n\n` +
@@ -131,7 +140,7 @@ export async function startSession(config: SessionConfig): Promise<SessionState>
   }
 
   const id = crypto.randomUUID().slice(0, 12);
-  const branch = `claude/sandbox-${Date.now()}`;
+  const branch = `${agent.branchPrefix}/sandbox-${Date.now()}`;
 
   // When importing from GitHub, clone into the session staging dir and use
   // that clone as the source repo for the rest of the startup flow.
@@ -183,6 +192,8 @@ export async function startSession(config: SessionConfig): Promise<SessionState>
     containerRef: id,
     error: null,
     startedAt: new Date().toISOString(),
+    agentId: agent.id,
+    taskDescription: config.taskDescription?.trim() || null,
   };
   sessions.set(id, session);
 
@@ -287,7 +298,12 @@ export async function startSession(config: SessionConfig): Promise<SessionState>
     // Validate profile if provided
     let profileDir: string | null = null;
     if (config.profileId) {
-      profileDir = profiles.getProfileDir(config.profileId);
+      const profile = profiles.getProfile(config.profileId);
+      if (!profile) throw new Error(`Profile ${config.profileId} not found.`);
+      if (profile.agentId !== agent.id) {
+        throw new Error(`${profile.name} is a ${getAgent(profile.agentId).displayName} profile and cannot be used with ${agent.displayName}.`);
+      }
+      profileDir = profiles.getProfileDir(config.profileId, agent.id);
       if (!fs.existsSync(profileDir)) {
         fs.mkdirSync(profileDir, { recursive: true });
       }
@@ -311,7 +327,7 @@ export async function startSession(config: SessionConfig): Promise<SessionState>
       "-v", `${PROXY_CA_VOLUME}:/proxy-ca:ro`,
       "-v", `vivi-workspace-${id}:/workspace`,
       ...dockerSocketFlags,
-      ...(profileDir ? ["-v", `${toHostPath(profileDir)}:/claude-profile:ro`] : []),
+      ...(profileDir ? ["-v", `${toHostPath(profileDir)}:${agent.profileMount}:ro`] : []),
       "-e", "HTTP_PROXY=http://proxy:7443",
       "-e", "HTTPS_PROXY=http://proxy:7443",
       "-e", "http_proxy=http://proxy:7443",
@@ -322,6 +338,9 @@ export async function startSession(config: SessionConfig): Promise<SessionState>
       "-e", "NODE_EXTRA_CA_CERTS=/proxy-ca/ca-cert.pem",
       "-e", "GH_TOKEN=gh-sandbox-placeholder",
       "-e", `TASK_DESCRIPTION=${config.taskDescription || ""}`,
+      "-e", `VIVI_AGENT=${agent.id}`,
+      "-e", `VIVI_AGENT_NAME=${agent.coAuthor.name}`,
+      "-e", `VIVI_AGENT_EMAIL=${agent.coAuthor.email}`,
       "-e", `GIT_REMOTE_URL=${remoteUrl}`,
       "-e", `SESSION_ID=${id}`,
       "-e", `SANDBOX_BRANCH=${branch}`,
@@ -348,9 +367,9 @@ export async function startSession(config: SessionConfig): Promise<SessionState>
     session.status = "running";
 
     db.prepare(`
-      INSERT OR REPLACE INTO active_containers (session_id, container_ref, container_id, repo_path, repo_name, branch, started_at, profile_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, id, session.containerId, repoPath, repoName, branch, session.startedAt, config.profileId ?? null);
+      INSERT OR REPLACE INTO active_containers (session_id, container_ref, container_id, repo_path, repo_name, branch, started_at, profile_id, agent_id, task_description)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, id, session.containerId, repoPath, repoName, branch, session.startedAt, config.profileId ?? null, agent.id, session.taskDescription);
 
     return { ...session };
   } catch (err: any) {
@@ -379,6 +398,8 @@ function attachSession(sourceSessionId: string): SessionState {
     containerRef: source.containerRef,
     error: null,
     startedAt: new Date().toISOString(),
+    agentId: source.agentId,
+    taskDescription: null,
   };
   sessions.set(id, session);
   console.log(`[container:${id}] Attached to container from session ${sourceSessionId}`);
@@ -414,7 +435,7 @@ export async function stopSession(sessionId: string): Promise<void> {
       if (profile?.autoSave) {
         try {
           profiles.saveProfileFromContainer(profileId, containerName);
-          console.log(`[container:${sessionId}] Saved ~/.claude to profile ${profileId}`);
+          console.log(`[container:${sessionId}] Saved ${getAgent(profile.agentId).profileDirectory} to profile ${profileId}`);
         } catch (err: any) {
           console.warn(`[container:${sessionId}] Profile save failed: ${err.message}`);
         }
@@ -549,6 +570,8 @@ export async function restoreSessions(): Promise<void> {
     repo_name: string | null;
     branch: string | null;
     started_at: string;
+    agent_id: string;
+    task_description: string | null;
   }[];
 
   for (const row of rows) {
@@ -583,6 +606,8 @@ export async function restoreSessions(): Promise<void> {
           containerRef: row.container_ref,
           error: reachable ? null : "Container is no longer reachable. It may have been removed or is in a broken state.",
           startedAt: row.started_at,
+          agentId: getAgent(row.agent_id).id,
+          taskDescription: row.task_description,
         };
         sessions.set(row.session_id, session);
         if (reachable) {
@@ -608,6 +633,8 @@ export async function restoreSessions(): Promise<void> {
             containerRef: row.container_ref,
             error: null,
             startedAt: row.started_at,
+            agentId: getAgent(row.agent_id).id,
+            taskDescription: row.task_description,
           };
           sessions.set(row.session_id, session);
           console.log(`[container:${row.session_id}] Restarted container ${containerName}`);

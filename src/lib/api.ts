@@ -14,6 +14,7 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
 
 // Config
 export const getConfig = () => request<{ host: string }>("/config");
+export const listAgents = () => request<import("./types").AgentDefinition[]>("/agents");
 
 // Sessions (multi-session)
 export const getSessions = () => request<import("./types").SessionState[]>("/sessions");
@@ -23,6 +24,7 @@ export const startSession = (body: {
   taskDescription?: string;
   profileId?: string;
   imageId?: number;
+  agentId?: import("./types").AgentId;
   githubRepo?: import("./types").GitHubRepoSelection;
 }) =>
   request<import("./types").SessionState>("/sessions", { method: "POST", body: JSON.stringify(body) });
@@ -127,6 +129,8 @@ export interface UpdateStatus {
   remoteCommit: string;
   behindCount: number;
   commitMessages: string[];
+  supported: boolean;
+  reason?: string;
 }
 export const checkForUpdate = () => request<UpdateStatus>("/update/check");
 export const applyUpdate = () =>
@@ -174,8 +178,9 @@ export const updateGitPolicy = (policy: Partial<import("./types").GitPolicy>) =>
   request<import("./types").GitPolicy>("/git/policy", { method: "PUT", body: JSON.stringify(policy) });
 
 // Profiles
-export const listProfiles = () => request<import("./types").Profile[]>("/profiles");
-export const createProfile = (body: { name: string; description?: string }) =>
+export const listProfiles = (agentId?: import("./types").AgentId) =>
+  request<import("./types").Profile[]>(`/profiles${agentId ? `?agentId=${encodeURIComponent(agentId)}` : ""}`);
+export const createProfile = (body: { name: string; description?: string; agentId: import("./types").AgentId }) =>
   request<import("./types").Profile>("/profiles", { method: "POST", body: JSON.stringify(body) });
 export const updateProfile = (id: string, patch: { name?: string; description?: string; autoSave?: boolean }) =>
   request<import("./types").Profile>(`/profiles/${id}`, { method: "PATCH", body: JSON.stringify(patch) });

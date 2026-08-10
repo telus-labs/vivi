@@ -21,6 +21,7 @@ import { listSessionContainers, inspectContainer, streamContainerLogs, type Dock
 import { subscribeSession } from "./docker-events.js";
 import { onSecretRequestUpdate } from "./secret-requests.js";
 import type { ChildProcess } from "node:child_process";
+import { rejectUnauthorizedUpgrade } from "./operator-auth.js";
 
 // Per-session activity monitors
 const monitors: Map<string, ActivityMonitor> = new Map();
@@ -33,8 +34,8 @@ interface BunPty {
   readonly proc: ReturnType<typeof Bun.spawn>;
 }
 
-// Per-session Claude PTY processes (for sending intervention commands)
-const claudePtySessions: Map<string, BunPty> = new Map();
+// Per-session coding-agent PTY processes (for sending intervention commands)
+const agentPtySessions: Map<string, BunPty> = new Map();
 
 /** Get (or create) the ActivityMonitor for a given session. */
 export function getMonitor(sessionId: string): ActivityMonitor {
@@ -42,9 +43,9 @@ export function getMonitor(sessionId: string): ActivityMonitor {
   if (!m) {
     m = new ActivityMonitor();
     // Wire up intervention: when the monitor detects stuck + auto-intervene is on,
-    // send ESC followed by a redirect prompt to the Claude PTY
+    // Send ESC followed by a redirect prompt to the active agent PTY.
     m.onIntervene = (message: string) => {
-      const ptyProc = claudePtySessions.get(sessionId);
+      const ptyProc = agentPtySessions.get(sessionId);
       if (ptyProc) {
         // Send ESC (cancel current input/operation)
         ptyProc.write("\x1b");
@@ -64,15 +65,15 @@ export function removeMonitor(sessionId: string): void {
   const m = monitors.get(sessionId);
   if (m) m.destroy();
   monitors.delete(sessionId);
-  claudePtySessions.delete(sessionId);
+  agentPtySessions.delete(sessionId);
 
-  // Kill and remove the persistent Claude PTY for this session (if any).
-  const persistent = persistentClaudeSessions.get(sessionId);
+  // Kill and remove the persistent agent PTY for this session (if any).
+  const persistent = persistentAgentSessions.get(sessionId);
   if (persistent) {
     try { persistent.pty.kill(); } catch (err: any) {
       console.warn(`[pty] Failed to kill persistent PTY for session ${sessionId}: ${err.message}`);
     }
-    persistentClaudeSessions.delete(sessionId);
+    persistentAgentSessions.delete(sessionId);
   }
 }
 
@@ -84,15 +85,15 @@ interface PtySession {
 const ptySessions: Map<string, PtySession> = new Map();
 let sessionCounter = 0;
 
-// Persistent Claude PTY sessions — survive WebSocket disconnects so the Claude
-// process keeps running when a tab is backgrounded or a second tab is opened.
-interface PersistentClaudeSession {
+// Persistent agent PTY sessions survive WebSocket disconnects so work keeps
+// running when a tab is backgrounded or a second tab is opened.
+interface PersistentAgentSession {
   pty: BunPty;
   buffer: string;        // rolling replay buffer sent to reconnecting clients
   subs: Set<WebSocket>; // currently connected WebSocket subscribers
 }
 const MAX_REPLAY_BUFFER = 512 * 1024; // 512 KB
-const persistentClaudeSessions: Map<string, PersistentClaudeSession> = new Map();
+const persistentAgentSessions: Map<string, PersistentAgentSession> = new Map();
 
 /**
  * Spawn a process with a Bun.Terminal PTY.
@@ -195,6 +196,7 @@ export function attachWebSocketServer(server: Server) {
     const url = new URL(req.url || "/", `http://${req.headers.host}`);
 
     const isViviWsPath = url.pathname === "/ws/terminal" || url.pathname === "/ws/monitor" || url.pathname === "/ws/docker";
+    if (isViviWsPath && rejectUnauthorizedUpgrade(req.headers, socket)) return;
     if (isViviWsPath && !isAllowedWsOrigin(req)) {
       socket.destroy();
       return;
@@ -222,16 +224,16 @@ export function attachWebSocketServer(server: Server) {
 function handleTerminalConnection(ws: WebSocket, url: URL) {
   const cols = parseInt(url.searchParams.get("cols") || "120", 10);
   const rows = parseInt(url.searchParams.get("rows") || "40", 10);
-  const mode = url.searchParams.get("mode") || "claude"; // "claude", "shell", or "setup-token"
+  const mode = url.searchParams.get("mode") || "agent"; // "agent", "shell", or "setup-token"
   const sessionId = url.searchParams.get("sessionId") || "";
 
   const ptySessionId = `term-${++sessionCounter}`;
 
-  // ── Claude mode: persistent PTY that survives WebSocket disconnects ──────────
+  // Agent mode: persistent PTY that survives WebSocket disconnects.
   // When a tab is backgrounded the browser may close the WebSocket, but the
-  // Claude process must keep running. We keep one PTY per sessionId and let
+  // The agent process must keep running. We keep one PTY per sessionId and let
   // multiple WebSocket connections subscribe to it.
-  if (mode === "claude") {
+  if (mode === "agent" || mode === "claude") {
     if (!sessionId) {
       ws.send(JSON.stringify({ type: "error", message: "Missing sessionId query parameter." }));
       ws.close();
@@ -248,20 +250,25 @@ function handleTerminalConnection(ws: WebSocket, url: URL) {
       return;
     }
 
-    let persistent = persistentClaudeSessions.get(sessionId);
+    let persistent = persistentAgentSessions.get(sessionId);
 
     if (!persistent) {
-      // Spawn the Claude process for the first connection to this session.
+      // Spawn the selected coding agent for the first connection.
       const containerName = getContainerName(sessionId);
       let ptyHandle: BunPty;
       try {
         ptyHandle = spawnPty(
           runtime.bin,
-          ["exec", "-it", "-u", "agent", "-e", "TERM=xterm-256color", containerName, "claude", "--dangerously-skip-permissions"],
+          [
+            "exec", "-it", "-u", "agent",
+            "-e", "TERM=xterm-256color",
+            "-e", `VIVI_INITIAL_PROMPT=${session.taskDescription || ""}`,
+            containerName, "vivi-run-agent", session.agentId,
+          ],
           { cols, rows },
           // onData — PTY → all subscribers + rolling buffer + monitor
           (data: string) => {
-            const p = persistentClaudeSessions.get(sessionId);
+            const p = persistentAgentSessions.get(sessionId);
             if (!p) return;
             p.buffer += data;
             if (p.buffer.length > MAX_REPLAY_BUFFER) {
@@ -274,7 +281,7 @@ function handleTerminalConnection(ws: WebSocket, url: URL) {
           },
           // onExit
           (exitCode: number) => {
-            const p = persistentClaudeSessions.get(sessionId);
+            const p = persistentAgentSessions.get(sessionId);
             if (p) {
               const msg = `\r\n[Process exited with code ${exitCode}]\r\n`;
               for (const sub of p.subs) {
@@ -283,10 +290,10 @@ function handleTerminalConnection(ws: WebSocket, url: URL) {
                   sub.close();
                 }
               }
-              persistentClaudeSessions.delete(sessionId);
+              persistentAgentSessions.delete(sessionId);
             }
-            if (claudePtySessions.get(sessionId) === ptyHandle) {
-              claudePtySessions.delete(sessionId);
+            if (agentPtySessions.get(sessionId) === ptyHandle) {
+              agentPtySessions.delete(sessionId);
             }
             ptySessions.delete(ptySessionId);
           },
@@ -298,8 +305,8 @@ function handleTerminalConnection(ws: WebSocket, url: URL) {
       }
 
       persistent = { pty: ptyHandle, buffer: "", subs: new Set() };
-      persistentClaudeSessions.set(sessionId, persistent);
-      claudePtySessions.set(sessionId, ptyHandle);
+      persistentAgentSessions.set(sessionId, persistent);
+      agentPtySessions.set(sessionId, ptyHandle);
       ptySessions.set(ptySessionId, { pty: ptyHandle, ws });
     }
 

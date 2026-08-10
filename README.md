@@ -12,7 +12,7 @@
 
 Vivi gives your AI coding agent its own isolated Docker container with full git, Docker-in-Docker, and internet access — while keeping your secrets, credentials, and repo metadata on your machine. The agent runs with zero permission prompts. You approve what leaves the sandbox.
 
-Currently built around [Claude Code](https://docs.anthropic.com/en/docs/claude-code), with the architecture designed to support other CLI-based agents.
+Vivi supports [OpenAI Codex](https://developers.openai.com/codex/cli) and [Claude Code](https://docs.anthropic.com/en/docs/claude-code) as first-class session agents.
 
 ## Isolation
 
@@ -20,12 +20,12 @@ Your agent gets a full Linux environment. What it *doesn't* get is your secrets.
 
 - **Git bundle cloning** — only tracked files enter the sandbox. `.env`, credentials, `node_modules`, gitignored files — none of it.
 - **MITM proxy** — the sandbox process's traffic routes through a TLS-intercepting proxy. API keys are injected at the proxy layer, so the sandbox only ever sees placeholder tokens.
-- **Network allowlist** — only approved hosts are reachable (npm, GitHub, Anthropic API by default). Everything else gets a 403.
+- **Network allowlist** — only approved hosts are reachable (npm, GitHub, OpenAI, and Anthropic APIs by default). Everything else gets a 403.
 - **Credential proxy** — git and `gh` credentials come from your host's existing setup (`git credential fill` / `gh auth token`). Zero config inside the sandbox.
 - **Docker namespace proxy** — per-session socket proxy scopes Docker access to the session (no cross-session reach) and rejects escape-prone container configs (`--privileged`, `--cap-add`, host namespaces, docker-socket mounts, …).
 - **Docker-in-Docker egress lockdown** — containers the agent launches in DinD are forced through the same MITM proxy: an in-DinD firewall drops direct public egress and the proxy env is injected into every nested container, so `docker run` can't escape the allowlist either.
 
-All of these restrictions are enforced at the network/proxy layer, not with CLI wrappers. The sandbox — and anything it launches — physically cannot bypass them.
+These controls are enforced at the container and network/proxy layers rather than by asking the coding-agent CLI to cooperate. See [infrastructure limitations](docs/infra-limitations.md) for the remaining DinD and shared-resource risks.
 
 ## Git workflow
 
@@ -52,9 +52,9 @@ Each session gets its own container. Run as many as you want.
 - **Docker-in-Docker** — the agent can launch its own containers (dev servers, databases, build tools) with per-session namespace isolation.
 - **Port forwarding** — `open-port 3000` inside the sandbox creates a clickable localhost link in the UI. Works for both sandbox processes and DinD containers. Set `PUBLIC_PORT_URL_BASE=https://your-domain.tld` to emit flat HTTPS links (`https://p-3000-{sessionPrefix}.your-domain.tld`) instead — handy behind Cloudflare tunnels where free Universal SSL only covers a single-level wildcard.
 - **Custom sandbox images** — register your own Docker images with pre-installed tools. Pick one per session or set a default.
-- **Profiles** — named Claude profiles that persist `~/.claude` state across sessions (memory, settings, project context).
+- **Profiles** — named per-agent profiles that persist `~/.codex` or `~/.claude` state across sessions.
 - **GitHub Issues integration** — launch sessions directly from issues. The issue description becomes the task.
-- **Self-updating** — Claude Code can update itself inside the sandbox via the native installer.
+- **Reproducible agents** — Codex and Claude Code versions are pinned in the sandbox image.
 
 ## Quick start
 
@@ -71,7 +71,7 @@ Grab the `vivi` binary for your platform from the [latest release](https://githu
 vivi start
 ```
 
-Open `http://localhost:7700`. Add your API key in the Secrets tab (or use "Login with Claude" for OAuth). Point it at a repo, give it a task, and watch it work.
+Open `http://localhost:7700`. Run `vivi auth` to display the generated web credentials. Add an OpenAI or Anthropic API key in Secrets, choose an agent, point it at a repo, and watch it work.
 
 ```bash
 vivi status     # show service status
@@ -79,7 +79,25 @@ vivi logs app   # tail logs
 vivi update     # pull the latest compose + images
 vivi stop       # shut it down
 vivi path       # print resolved config / data dirs
+vivi auth       # print web UI username and password
 ```
+
+### Private-network access
+
+The published app port binds to `127.0.0.1` by default. To expose Vivi only on a VPN interface, set `APP_BIND_ADDRESS` to that interface's IP before `vivi start`; do not use `0.0.0.0`. The CLI generates a strong `VIVI_OPERATOR_PASSWORD`, and the same HTTP Basic credentials protect the REST API, terminal WebSockets, and forwarded application ports.
+
+For example:
+
+```bash
+APP_BIND_ADDRESS=10.0.0.10 \
+HOST=vivi.internal \
+PUBLIC_PORT_URL_BASE=https://vivi.internal:7700 \
+vivi start
+```
+
+Restrict the host firewall to the VPN interface as a second boundary.
+If Vivi sits behind a trusted reverse proxy, set `VIVI_TRUST_PROXY_HOPS` to
+the exact number of proxy hops so rate limiting uses the real client address.
 
 Config and data live in platform-native locations by default:
 
@@ -118,7 +136,7 @@ See [docs/architecture.md](docs/architecture.md) for the full architecture, comp
 | `bun run build:cli` | Compile the `vivi` CLI binary to `dist/bin/vivi` |
 | `bun run build:docker` | Build all Docker images |
 | `bun start` | Production server |
-| `bun test` | Run tests |
+| `bun run test` | Run the Vitest suite |
 
 ## License
 

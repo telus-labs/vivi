@@ -108,7 +108,8 @@ export function paths(): ViviPaths {
   const profilesDir = path.join(dataDir, "profiles");
 
   for (const dir of [configDir, dataDir, stagingDir, socketsDir, profilesDir]) {
-    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    try { fs.chmodSync(dir, 0o700); } catch { /* best effort on Windows */ }
   }
 
   cached = {

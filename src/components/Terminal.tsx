@@ -11,8 +11,8 @@ import { getWsBase } from "../lib/backend";
 import type { Terminal as GhosttyTerminal } from "ghostty-web";
 
 interface TerminalProps {
-  /** "claude" for Claude Code session, "shell" for raw bash, "setup-token" for auth */
-  mode?: "claude" | "shell" | "setup-token";
+  /** "agent" for the session's selected coding agent, "shell" for bash, or Claude token setup. */
+  mode?: "agent" | "shell" | "setup-token";
   /** Session ID for multi-session support */
   sessionId?: string;
   className?: string;
@@ -42,7 +42,7 @@ async function ensureGhosttyInit() {
 }
 
 export function Terminal({
-  mode = "claude",
+  mode = "agent",
   sessionId,
   className,
   onConnected,

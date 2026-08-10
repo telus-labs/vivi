@@ -1,3 +1,11 @@
+export type AgentId = "claude" | "codex";
+
+export interface AgentDefinition {
+  id: AgentId;
+  displayName: string;
+  profileDirectory: string;
+}
+
 export interface SessionState {
   id: string;
   status: "stopped" | "starting" | "running" | "stopping" | "error";
@@ -8,6 +16,8 @@ export interface SessionState {
   containerRef: string;
   error: string | null;
   startedAt: string | null;
+  agentId: AgentId;
+  taskDescription: string | null;
 }
 
 export interface PortForward {
@@ -173,6 +183,7 @@ export interface Profile {
   autoSave: boolean;
   createdAt: string;
   lastUsedAt: string | null;
+  agentId: AgentId;
 }
 
 export interface GitPolicy {

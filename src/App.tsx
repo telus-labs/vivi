@@ -24,7 +24,7 @@ import { GitHubSettings } from "./components/GitHubSettings";
 import { GitHubRepoPicker } from "./components/GitHubRepoPicker";
 import { MobileKeyToolbar } from "./components/MobileKeyToolbar";
 import { BackendSwitcher } from "./components/BackendSwitcher";
-import type { SessionState, HealthSnapshot, Profile, SecretRequest, SandboxImage, PortForward, GitHubRepoSelection } from "./lib/types";
+import type { SessionState, HealthSnapshot, Profile, SecretRequest, SandboxImage, PortForward, GitHubRepoSelection, AgentId, AgentDefinition } from "./lib/types";
 import * as api from "./lib/api";
 import { fetchHost } from "./lib/host";
 import { getWsBase } from "./lib/backend";
@@ -68,8 +68,10 @@ export function App() {
     profileId: string;
     imageId: string;
     githubRepo: GitHubRepoSelection | null;
-  }>({ repoPath: "", taskDescription: "", profileId: "", imageId: "", githubRepo: null });
+    agentId: AgentId;
+  }>({ repoPath: "", taskDescription: "", profileId: "", imageId: "", githubRepo: null, agentId: "codex" });
   const [availableProfiles, setAvailableProfiles] = useState<Profile[]>([]);
+  const [availableAgents, setAvailableAgents] = useState<AgentDefinition[]>([]);
   const [sandboxImages, setSandboxImages] = useState<SandboxImage[]>([]);
   const [sessionMode, setSessionMode] = useState<"new" | "github" | "attach">("new");
   const [githubConfigured, setGithubConfigured] = useState<boolean | null>(null);
@@ -170,6 +172,7 @@ export function App() {
   // Fetch pending secret requests on mount
   useEffect(() => {
     fetchHost().then(setHost);
+    api.listAgents().then(setAvailableAgents).catch((err) => console.warn("Failed to fetch agents:", err));
   }, []);
 
   useEffect(() => {
@@ -302,7 +305,7 @@ export function App() {
 
   useEffect(() => {
     if (showNewSessionForm || sessions.length === 0) {
-      api.listProfiles().then(setAvailableProfiles).catch((err) => console.warn("Failed to fetch profiles:", err));
+      api.listProfiles(form.agentId).then(setAvailableProfiles).catch((err) => console.warn("Failed to fetch profiles:", err));
       api.getGitHubStatus()
         .then((s) => setGithubConfigured(s.configured))
         .catch((err) => { console.warn("Failed to fetch github status:", err); setGithubConfigured(false); });
@@ -313,7 +316,7 @@ export function App() {
         if (defaultImg) setForm(f => f.imageId ? f : { ...f, imageId: String(defaultImg.id) });
       }).catch((err) => console.warn("Failed to fetch sandbox images:", err));
     }
-  }, [showNewSessionForm, sessions.length]);
+  }, [showNewSessionForm, sessions.length, form.agentId]);
 
   useEffect(() => {
     if (shouldShowRenameTip(sessions.length)) {
@@ -372,6 +375,7 @@ export function App() {
         taskDescription: form.taskDescription || undefined,
         profileId: form.profileId || undefined,
         imageId: form.imageId ? Number(form.imageId) : undefined,
+        agentId: form.agentId,
       };
       const body = sessionMode === "attach" && attachTarget
         ? { attachTo: attachTarget }
@@ -380,7 +384,7 @@ export function App() {
           : { repoPath: form.repoPath, ...commonOpts };
       const s = await api.startSession(body);
       if (sessionMode === "new" && form.repoPath) saveRecentPath(form.repoPath);
-      setShowNewSessionForm(false); setActiveSessionId(s.id); setForm({ repoPath: "", taskDescription: "", profileId: "", imageId: "", githubRepo: null }); setAttachTarget(null); refreshSessions();
+      setShowNewSessionForm(false); setActiveSessionId(s.id); setForm({ repoPath: "", taskDescription: "", profileId: "", imageId: "", githubRepo: null, agentId: "codex" }); setAttachTarget(null); refreshSessions();
     } catch (err: any) { setError(err.message); } finally { setStarting(false); }
   };
 
@@ -741,7 +745,7 @@ export function App() {
               <Terminal mode="setup-token" className="flex-1" onDisconnected={async () => { try { const result = await api.extractToken(); if (result.ok) setSecretsRefreshKey((k) => k + 1); } catch (err) { console.warn("extractToken: failed to extract token on disconnect", err); } setLoginMode(false); setTab("secrets"); }} />
             </div>
           ) : showTerminal && isRunning ? (
-            <Terminal sessionId={activeSessionId!} mode="claude" className="flex-1" />
+            <Terminal sessionId={activeSessionId!} mode="agent" className="flex-1" />
           ) : showTerminal && activeSession?.status === "starting" ? (
             <div className="flex-1 flex flex-col items-center justify-center gap-3 text-gray-400"><Loader2 className="w-8 h-8 animate-spin text-[var(--color-accent)]" /><p className="text-sm font-medium">Starting sandbox containers...</p><p className="text-xs text-gray-500">Building images and waiting for services</p></div>
           ) : showTerminal && activeSession?.status === "error" ? (
@@ -856,6 +860,25 @@ export function App() {
                     )}
                   </div>
                 )}
+                {sessionMode !== "attach" && (
+                  <div className="flex items-center gap-2">
+                    <Activity className="w-3.5 h-3.5 text-gray-500 shrink-0" />
+                    <label htmlFor="agent-select" className="text-xs text-gray-500">Agent</label>
+                    <select
+                      id="agent-select"
+                      value={form.agentId}
+                      onChange={(e) => setForm({ ...form, agentId: e.target.value as AgentId, profileId: "" })}
+                      className="flex-1 px-2 py-1.5 text-xs bg-[var(--color-surface)] border border-[var(--color-border)] rounded focus:border-[var(--color-accent)] focus:outline-none text-gray-300"
+                    >
+                      {(availableAgents.length ? availableAgents : [
+                        { id: "codex" as const, displayName: "OpenAI Codex", profileDirectory: ".codex" },
+                        { id: "claude" as const, displayName: "Claude Code", profileDirectory: ".claude" },
+                      ]).map((agent) => (
+                        <option key={agent.id} value={agent.id}>{agent.displayName}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
                 {sessionMode !== "attach" && availableProfiles.length > 0 && (
                   <div className="flex items-center gap-2">
                     <UserCircle className="w-3.5 h-3.5 text-gray-500 shrink-0" />
@@ -888,7 +911,7 @@ export function App() {
                 <button type="submit" disabled={starting || (sessionMode === "new" && !form.repoPath) || (sessionMode === "github" && !form.githubRepo) || (sessionMode === "attach" && !attachTarget)} className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-[var(--color-accent-muted)] hover:bg-[var(--color-accent)] disabled:opacity-50 text-white rounded-lg font-medium transition-colors">
                   {starting ? <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />{sessionMode === "attach" ? "Attaching..." : "Starting sandbox..."}</> : sessionMode === "attach" ? <><Container className="w-4 h-4" />Attach Session</> : <><Play className="w-4 h-4" />Launch Sandbox</>}
                 </button>
-                <p className="text-xs text-gray-500 text-center">{sessionMode === "attach" ? "A new terminal session will connect to the selected container." : "Make sure to add your Anthropic API key in the Secrets tab before starting."}</p>
+                <p className="text-xs text-gray-500 text-center">{sessionMode === "attach" ? "A new terminal session will connect to the selected container." : form.agentId === "codex" ? "Add an OpenAI API key in Secrets before launching Codex." : "Add an Anthropic API key in Secrets before launching Claude."}</p>
               </form>
             </div>
           )}

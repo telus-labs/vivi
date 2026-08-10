@@ -1,7 +1,7 @@
 /**
  * Vivi backend server.
  *
- * REST API + WebSocket server for managing multiple sandboxed Claude agent sessions.
+ * REST API + WebSocket server for managing multiple sandboxed coding-agent sessions.
  */
 
 import express from "express";
@@ -34,6 +34,8 @@ import * as githubIssues from "./github-issues.js";
 import * as github from "./github.js";
 import * as profiles from "./profiles.js";
 import * as secretRequests from "./secret-requests.js";
+import { isAgentId, listAgents } from "./agents.js";
+import { isOperatorAuthorized, operatorAuthMiddleware, rejectUnauthorizedUpgrade } from "./operator-auth.js";
 import rateLimit from "express-rate-limit";
 
 process.on("uncaughtException", (err: NodeJS.ErrnoException) => {
@@ -88,10 +90,13 @@ const RATE_LIMITS = {
 const limiter = (key: keyof typeof RATE_LIMITS) => rateLimit(RATE_LIMITS[key]);
 
 const app = express();
-// Behind cloudflared (boyhouse) the real client IP arrives via X-Forwarded-For.
-// Trust one proxy hop so express-rate-limit uses that IP for keying and doesn't
-// throw ERR_ERL_UNEXPECTED_X_FORWARDED_FOR on every request.
-app.set("trust proxy", 1);
+// Trust reverse-proxy forwarding only when explicitly configured. Enabling
+// this unconditionally lets direct clients spoof X-Forwarded-For and evade
+// per-IP rate limits.
+const trustProxyHops = Number.parseInt(process.env.VIVI_TRUST_PROXY_HOPS || "0", 10);
+if (Number.isSafeInteger(trustProxyHops) && trustProxyHops > 0) {
+  app.set("trust proxy", trustProxyHops);
+}
 
 // Restrict CORS to same-origin and known dev origins. Reflecting any origin
 // (the cors() default) lets drive-by sites make credentialed reads of the API.
@@ -112,6 +117,7 @@ app.use(cors((req, cb) => {
   }
   cb(null, { origin: allowed, credentials: true });
 }));
+app.use(operatorAuthMiddleware);
 app.use(express.json());
 
 // Shared-secret guard for proxy→host trusted routes. Enforced only when
@@ -135,6 +141,10 @@ function requireInternalToken(req: express.Request, res: express.Response, next:
 // --- Health ---
 app.get("/api/config", limiter("health"), (_req, res) => {
   res.json({ host: HOST });
+});
+
+app.get("/api/agents", limiter("health"), (_req, res) => {
+  res.json(listAgents().map(({ id, displayName, profileDirectory }) => ({ id, displayName, profileDirectory })));
 });
 
 app.get("/api/health", limiter("health"), (_req, res) => {
@@ -900,12 +910,17 @@ app.get("/api/github/branches", limiter("github"), async (req, res) => {
 
 // --- Profiles ---
 app.get("/api/profiles", limiter("profiles"), (_req, res) => {
-  res.json(profiles.listProfiles());
+  const rawAgentId = _req.query.agentId;
+  const agentId = typeof rawAgentId === "string" && isAgentId(rawAgentId) ? rawAgentId : undefined;
+  res.json(profiles.listProfiles(agentId));
 });
 
 app.post("/api/profiles", limiter("profiles"), (req, res) => {
   try {
-    const p = profiles.createProfile(req.body.name, req.body.description);
+    if (req.body.agentId !== undefined && !isAgentId(req.body.agentId)) {
+      return res.status(400).json({ error: "agentId must be claude or codex" });
+    }
+    const p = profiles.createProfile(req.body.name, req.body.description, req.body.agentId);
     res.json(p);
   } catch (err: any) {
     res.status(400).json({ error: err.message });
@@ -1236,6 +1251,11 @@ function extractPortSubdomain(host: string | undefined): string | null {
 const server = http.createServer((req, res) => {
   const subdomain = extractPortSubdomain(req.headers.host);
   if (subdomain) {
+    if (!isOperatorAuthorized(req.headers)) {
+      res.writeHead(401, { "WWW-Authenticate": 'Basic realm="Vivi", charset="UTF-8"' });
+      res.end();
+      return;
+    }
     const pf = getPortForwardBySubdomain(subdomain);
     if (pf) {
       portProxy.web(req, res, { target: `http://127.0.0.1:${pf.hostPort}` });
@@ -1254,6 +1274,7 @@ const server = http.createServer((req, res) => {
 server.on("upgrade", (req, socket, head) => {
   const subdomain = extractPortSubdomain(req.headers.host);
   if (subdomain) {
+    if (rejectUnauthorizedUpgrade(req.headers, socket as net.Socket)) return;
     const pf = getPortForwardBySubdomain(subdomain);
     if (pf) {
       forwardWebSocketUpgrade(req, socket as net.Socket, head, pf);

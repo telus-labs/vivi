@@ -1,7 +1,7 @@
 /**
  * Secret request management — in-memory store for secret requests from sandboxes.
  *
- * When Claude needs an API key it doesn't have, it calls `request-secret` from
+ * When a coding agent needs an API key it doesn't have, it calls `request-secret` from
  * within the sandbox. The request is stored here and broadcast to the UI via
  * the monitor WebSocket so the user can add the secret.
  */

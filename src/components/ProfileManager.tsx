@@ -1,12 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { UserCircle, Plus, Trash2 } from "lucide-react";
-import type { Profile } from "../lib/types";
+import type { AgentId, Profile } from "../lib/types";
 import * as api from "../lib/api";
 
 export function ProfileManager() {
   const [profileList, setProfileList] = useState<Profile[]>([]);
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ name: "", description: "" });
+  const [form, setForm] = useState<{ name: string; description: string; agentId: AgentId }>({ name: "", description: "", agentId: "codex" });
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
@@ -29,8 +29,8 @@ export function ProfileManager() {
     setError(null);
     setCreating(true);
     try {
-      await api.createProfile({ name: form.name.trim(), description: form.description.trim() || undefined });
-      setForm({ name: "", description: "" });
+      await api.createProfile({ name: form.name.trim(), description: form.description.trim() || undefined, agentId: form.agentId });
+      setForm({ name: "", description: "", agentId: "codex" });
       setShowForm(false);
       refresh();
     } catch (e: any) {
@@ -71,7 +71,7 @@ export function ProfileManager() {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <UserCircle className="w-4 h-4 text-[var(--color-accent)]" />
-          <h2 className="text-sm font-semibold">Claude Profiles</h2>
+          <h2 className="text-sm font-semibold">Agent Profiles</h2>
         </div>
         <button
           onClick={() => setShowForm((s) => !s)}
@@ -83,7 +83,7 @@ export function ProfileManager() {
       </div>
 
       <p className="text-xs text-gray-400">
-        Profiles persist <code className="font-mono">~/.claude</code> across sessions — Claude settings, commands, and history.
+        Profiles persist settings and history from <code className="font-mono">~/.claude</code> or <code className="font-mono">~/.codex</code> across sessions.
       </p>
 
       {error && (
@@ -92,6 +92,14 @@ export function ProfileManager() {
 
       {showForm && (
         <form onSubmit={handleCreate} className="space-y-2 p-3 bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg">
+          <select
+            value={form.agentId}
+            onChange={(e) => setForm({ ...form, agentId: e.target.value as AgentId })}
+            className="w-full px-3 py-1.5 text-sm bg-[var(--color-surface-raised)] border border-[var(--color-border)] rounded focus:border-[var(--color-accent)] focus:outline-none"
+          >
+            <option value="codex">OpenAI Codex</option>
+            <option value="claude">Claude Code</option>
+          </select>
           <input
             autoFocus
             required
@@ -118,7 +126,7 @@ export function ProfileManager() {
       )}
 
       {profileList.length === 0 ? (
-        <p className="text-sm text-gray-500 text-center py-6">No profiles yet. Create one to persist Claude state between sessions.</p>
+        <p className="text-sm text-gray-500 text-center py-6">No profiles yet. Create one to persist agent state between sessions.</p>
       ) : (
         <div className="space-y-1.5">
           {profileList.map((p) => (
@@ -126,10 +134,11 @@ export function ProfileManager() {
               <UserCircle className="w-4 h-4 text-gray-500 shrink-0" />
               <div className="flex-1 min-w-0">
                 <div className="text-sm font-medium truncate">{p.name}</div>
+                <div className="text-[10px] uppercase tracking-wide text-gray-500">{p.agentId === "codex" ? "OpenAI Codex" : "Claude Code"}</div>
                 {p.description && <div className="text-xs text-gray-400 truncate">{p.description}</div>}
                 {p.lastUsedAt && <div className="text-xs text-gray-500">Last used {new Date(p.lastUsedAt).toLocaleDateString()}</div>}
               </div>
-              <label className="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer shrink-0" title="Auto-save ~/.claude on session stop">
+              <label className="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer shrink-0" title={`Auto-save ~/.${p.agentId} on session stop`}>
                 <input
                   type="checkbox"
                   checked={p.autoSave}

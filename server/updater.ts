@@ -8,6 +8,7 @@
 
 import { execSync, spawn } from "node:child_process";
 import path from "node:path";
+import fs from "node:fs";
 import { runtime } from "./runtime.js";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
@@ -18,11 +19,24 @@ interface UpdateStatus {
   remoteCommit: string;
   behindCount: number;
   commitMessages: string[];
+  supported: boolean;
+  reason?: string;
 }
 
 let updateInProgress = false;
 
 export function checkForUpdate(): UpdateStatus {
+  if (!fs.existsSync(path.join(ROOT, ".git"))) {
+    return {
+      available: false,
+      currentCommit: "container-image",
+      remoteCommit: "container-image",
+      behindCount: 0,
+      commitMessages: [],
+      supported: false,
+      reason: "Container releases are updated with `vivi update` on the host.",
+    };
+  }
   const branch = execSync("git rev-parse --abbrev-ref HEAD", {
     cwd: ROOT,
     encoding: "utf-8",
@@ -49,6 +63,7 @@ export function checkForUpdate(): UpdateStatus {
       remoteCommit: current,
       behindCount: 0,
       commitMessages: [],
+      supported: true,
     };
   }
 
@@ -71,6 +86,7 @@ export function checkForUpdate(): UpdateStatus {
       remoteCommit,
       behindCount: 0,
       commitMessages: [],
+      supported: true,
     };
   }
 
@@ -100,6 +116,7 @@ export function checkForUpdate(): UpdateStatus {
     remoteCommit,
     behindCount,
     commitMessages,
+    supported: true,
   };
 }
 
@@ -115,6 +132,9 @@ export async function applyUpdate(): Promise<void> {
   updateInProgress = true;
 
   try {
+    if (!fs.existsSync(path.join(ROOT, ".git"))) {
+      throw new Error("Container releases must be updated with `vivi update` on the host.");
+    }
     const branch = execSync("git rev-parse --abbrev-ref HEAD", {
       cwd: ROOT,
       encoding: "utf-8",
@@ -129,14 +149,14 @@ export async function applyUpdate(): Promise<void> {
     });
 
     console.log("[updater] Installing dependencies...");
-    execSync("pnpm install --frozen-lockfile", {
+    execSync("bun install --frozen-lockfile", {
       cwd: ROOT,
       stdio: "pipe",
       timeout: 120_000,
     });
 
     console.log("[updater] Building frontend...");
-    execSync("pnpm run build", {
+    execSync("bun run build", {
       cwd: ROOT,
       stdio: "pipe",
       timeout: 120_000,

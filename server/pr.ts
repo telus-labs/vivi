@@ -15,6 +15,7 @@ import path from "node:path";
 import { getContainerName, getSession } from "./container.js";
 import { runtime } from "./runtime.js";
 import * as github from "./github.js";
+import { getAgent } from "./agents.js";
 
 export interface PrRequest {
   id: string;
@@ -268,7 +269,8 @@ export async function approvePr(
       // Build full PR body — use custom description if provided, otherwise agent's
       const prBody = customDescription ?? pr.description ?? "";
       let fullBody = prBody;
-      fullBody += "\n\nCo-Authored-By: Claude (Vivi) <noreply@anthropic.com>";
+      const agent = getAgent(session.agentId);
+      fullBody += `\n\nCo-Authored-By: ${agent.coAuthor.name} <${agent.coAuthor.email}>`;
 
       // Write body to a temp file to preserve newlines and special characters
       const bodyFile = `/tmp/vivi-pr-body-${pr.id}.md`;

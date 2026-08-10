@@ -132,7 +132,7 @@ export function fetchGitHubIssues(repoPath: string): IssuesResult {
 
 /**
  * Build a task description string from an ordered list of issues.
- * This gets written to CLAUDE.md inside the sandbox so Claude knows what to work on.
+ * This is supplied as the selected agent's initial terminal prompt.
  */
 export function buildTaskDescription(issues: GitHubIssue[]): string {
   if (issues.length === 0) return "";

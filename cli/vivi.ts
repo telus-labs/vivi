@@ -151,6 +151,20 @@ function getOrCreateInternalToken(): string {
   return token;
 }
 
+function getOrCreateOperatorPassword(): string {
+  const passwordFile = path.join(paths().dataDir, "operator-password");
+  try {
+    const existing = fs.readFileSync(passwordFile, "utf-8").trim();
+    if (existing) return existing;
+  } catch {
+    // not created yet
+  }
+  const password = crypto.randomBytes(24).toString("base64url");
+  fs.mkdirSync(path.dirname(passwordFile), { recursive: true });
+  fs.writeFileSync(passwordFile, password, { mode: 0o600 });
+  return password;
+}
+
 function composeEnv(): Record<string, string> {
   const p = paths();
   return {
@@ -161,7 +175,14 @@ function composeEnv(): Record<string, string> {
     // host Docker daemon when launching sandbox containers.
     HOST_DATA_DIR: p.dataDir,
     VIVI_INTERNAL_TOKEN: getOrCreateInternalToken(),
+    VIVI_OPERATOR_USER: process.env.VIVI_OPERATOR_USER || "vivi",
+    VIVI_OPERATOR_PASSWORD: process.env.VIVI_OPERATOR_PASSWORD || getOrCreateOperatorPassword(),
   };
+}
+
+function printOperatorCredentials(): void {
+  console.log(`username: ${process.env.VIVI_OPERATOR_USER || "vivi"}`);
+  console.log(`password: ${process.env.VIVI_OPERATOR_PASSWORD || getOrCreateOperatorPassword()}`);
 }
 
 function printPaths() {
@@ -262,6 +283,7 @@ Commands:
   update          Pull latest compose + images
   path            Print resolved config / data dirs
   version         Print CLI version
+  auth            Print web UI credentials
 
 Env vars:
   VIVI_CONFIG_DIR   Override config directory
@@ -299,6 +321,10 @@ async function main(): Promise<void> {
       break;
     case "path":
       printPaths();
+      rc = 0;
+      break;
+    case "auth":
+      printOperatorCredentials();
       rc = 0;
       break;
     case "version":

@@ -42,7 +42,8 @@ function syncProxyFile() {
   for (const r of rows) {
     proxySecrets[r.id] = { key: r.key, baseUrl: r.base_url, headerName: r.header_name };
   }
-  fs.writeFileSync(SECRETS_FILE, JSON.stringify(proxySecrets, null, 2));
+  fs.writeFileSync(SECRETS_FILE, JSON.stringify(proxySecrets, null, 2), { mode: 0o600 });
+  try { fs.chmodSync(SECRETS_FILE, 0o600); } catch { /* best effort on Windows */ }
 }
 
 // Sync on startup

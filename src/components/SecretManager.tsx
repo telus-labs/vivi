@@ -108,6 +108,7 @@ export function SecretManager({ onLoginStart, refreshKey, pendingRequests = [], 
   };
 
   const hasAnthropic = secrets.some((s) => s.envVar === "CLAUDE_CODE_OAUTH_TOKEN");
+  const hasOpenAI = secrets.some((s) => s.envVar === "OPENAI_API_KEY");
 
   return (
     <div className="space-y-4">
@@ -116,17 +117,31 @@ export function SecretManager({ onLoginStart, refreshKey, pendingRequests = [], 
           <Shield className="w-5 h-5 text-[var(--color-accent)]" />
           <h2 className="text-lg font-semibold">Secrets</h2>
         </div>
-        <button
-          onClick={() => setShowForm(!showForm)}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-[var(--color-accent-muted)] hover:bg-[var(--color-accent)] text-white rounded transition-colors"
-        >
-          <Plus className="w-4 h-4" />
-          Add Secret
-        </button>
+        <div className="flex items-center gap-2">
+          {!hasOpenAI && (
+            <button
+              onClick={() => {
+                setForm({ name: "OpenAI", envVar: "OPENAI_API_KEY", key: "", baseUrl: "https://api.openai.com", headerName: "authorization" });
+                setShowForm(true);
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm border border-[var(--color-border)] hover:border-[var(--color-accent)] text-gray-300 rounded transition-colors"
+            >
+              <Plus className="w-4 h-4" />
+              OpenAI Key
+            </button>
+          )}
+          <button
+            onClick={() => setShowForm(!showForm)}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-[var(--color-accent-muted)] hover:bg-[var(--color-accent)] text-white rounded transition-colors"
+          >
+            <Plus className="w-4 h-4" />
+            Add Secret
+          </button>
+        </div>
       </div>
 
       <p className="text-sm text-gray-400">
-        Register API keys here. Claude gets a dummy key + a reverse-proxy base URL.
+        Register API keys here. Coding agents receive a dummy key and proxy URL.
         The real key is injected by the proxy only when the request targets the correct API.
       </p>
 
@@ -160,7 +175,7 @@ export function SecretManager({ onLoginStart, refreshKey, pendingRequests = [], 
                     )}
                   </div>
                   <p className="text-xs text-gray-400">
-                    Claude is requesting an API key for <strong>{req.name}</strong> (env: <code className="px-1 py-0.5 bg-[var(--color-surface)] rounded">{req.envVar}</code>).
+                    The coding agent is requesting an API key for <strong>{req.name}</strong> (env: <code className="px-1 py-0.5 bg-[var(--color-surface)] rounded">{req.envVar}</code>).
                   </p>
                   <button
                     onClick={() => {

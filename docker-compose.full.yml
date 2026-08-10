@@ -20,7 +20,7 @@ services:
   app:
     image: ghcr.io/telus-oss/vivi-app:${VIVI_VERSION:-latest}
     ports:
-      - "${APP_PORT:-7700}:7700"
+      - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-7700}:7700"
     environment:
       - PORT=7700
       - HOST=${HOST:-0.0.0.0}
@@ -40,6 +40,9 @@ services:
       - DIND_HOST=dind
       # Shared secret the proxy attaches to sandbox→host calls; must match proxy's.
       - VIVI_INTERNAL_TOKEN=${VIVI_INTERNAL_TOKEN:-}
+      - VIVI_OPERATOR_USER=${VIVI_OPERATOR_USER:-vivi}
+      - VIVI_OPERATOR_PASSWORD=${VIVI_OPERATOR_PASSWORD:-}
+      - VIVI_TRUST_PROXY_HOPS=${VIVI_TRUST_PROXY_HOPS:-0}
     volumes:
       - ${VIVI_DATA_DIR}:/app/data
       - ${VIVI_CONFIG_DIR}:/app/config

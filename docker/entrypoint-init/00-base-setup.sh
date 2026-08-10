@@ -53,20 +53,22 @@ if [ -d /workspace/.git ]; then
   mkdir -p /workspace/.git/hooks
   cat > /workspace/.git/hooks/prepare-commit-msg << 'HOOK'
 #!/bin/sh
-# Append Claude Code co-author trailer if not already present
+# Append the selected coding agent's co-author trailer if not already present.
 COMMIT_MSG_FILE="$1"
 if ! grep -q "Co-authored-by:" "$COMMIT_MSG_FILE" 2>/dev/null; then
-  printf '\nCo-authored-by: Claude Code <claude-code@anthropic.com>\n' >> "$COMMIT_MSG_FILE"
+  printf '\nCo-authored-by: %s <%s>\n' "${VIVI_AGENT_NAME:-Vivi Agent}" "${VIVI_AGENT_EMAIL:-noreply@vivi.local}" >> "$COMMIT_MSG_FILE"
 fi
 HOOK
   chmod +x /workspace/.git/hooks/prepare-commit-msg
-  echo "[sandbox] Installed prepare-commit-msg hook for Claude Code co-authorship"
+  echo "[sandbox] Installed prepare-commit-msg hook for agent co-authorship"
 fi
 
-# Load Claude profile if one was mounted
-if [ -d /claude-profile ] && [ "$(ls -A /claude-profile 2>/dev/null)" ]; then
-  echo "[sandbox] Loading Claude profile into ~/.claude..."
-  cp -rT /claude-profile /home/agent/.claude
+# Load the selected agent profile if one was mounted.
+AGENT_CONFIG_DIR="/home/agent/.${VIVI_AGENT:-claude}"
+if [ -d /agent-profile ] && [ "$(ls -A /agent-profile 2>/dev/null)" ]; then
+  echo "[sandbox] Loading ${VIVI_AGENT:-claude} profile into ${AGENT_CONFIG_DIR}..."
+  mkdir -p "$AGENT_CONFIG_DIR"
+  cp -rT /agent-profile "$AGENT_CONFIG_DIR"
   echo "[sandbox] Profile loaded"
 fi
 
@@ -74,13 +76,19 @@ fi
 # Keeping this outside /workspace means it never appears in the user's repo
 # diff/status. Appending preserves any CLAUDE.md that came from the profile.
 if [ -f /opt/vivi/sandbox-CLAUDE.md ]; then
-  mkdir -p /home/agent/.claude
-  if [ -s /home/agent/.claude/CLAUDE.md ]; then
-    printf '\n\n' >> /home/agent/.claude/CLAUDE.md
+  case "${VIVI_AGENT:-claude}" in
+    codex) INSTRUCTIONS_FILE="/home/agent/.codex/AGENTS.md" ;;
+    *) INSTRUCTIONS_FILE="/home/agent/.claude/CLAUDE.md" ;;
+  esac
+  mkdir -p "$(dirname "$INSTRUCTIONS_FILE")"
+  if ! grep -q "running in a sandboxed Vivi environment" "$INSTRUCTIONS_FILE" 2>/dev/null; then
+    if [ -s "$INSTRUCTIONS_FILE" ]; then
+      printf '\n\n' >> "$INSTRUCTIONS_FILE"
+    fi
+    sed "s|__DEFAULT_BRANCH__|${DEFAULT_BRANCH}|g" /opt/vivi/sandbox-CLAUDE.md \
+      >> "$INSTRUCTIONS_FILE"
   fi
-  sed "s|__DEFAULT_BRANCH__|${DEFAULT_BRANCH}|g" /opt/vivi/sandbox-CLAUDE.md \
-    >> /home/agent/.claude/CLAUDE.md
-  echo "[sandbox] Rendered sandbox instructions to ~/.claude/CLAUDE.md"
+  echo "[sandbox] Rendered sandbox instructions to ${INSTRUCTIONS_FILE}"
 fi
 
 echo "[00-base-setup] Configuring secrets auto-sourcing..."
@@ -104,7 +112,7 @@ request-secret() {
 BASHRC_SECRETS
 
 echo "[00-base-setup] Fixing file ownership..."
-chown -R agent:agent /workspace /home/agent/.claude /home/agent/.claude.json 2>/dev/null || true
+chown -R agent:agent /workspace /home/agent/.claude /home/agent/.claude.json /home/agent/.codex 2>/dev/null || true
 
 # Allow agent user to access the Docker socket (mounted from per-session proxy)
 chmod 666 /var/run/docker.sock 2>/dev/null || true

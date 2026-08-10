@@ -25,8 +25,8 @@ services:
       context: .
       dockerfile: docker/Dockerfile.app.dev
     ports:
-      - "${APP_PORT:-7700}:7700"
-      - "${VITE_PORT:-5173}:5173"
+      - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-7700}:7700"
+      - "${APP_BIND_ADDRESS:-127.0.0.1}:${VITE_PORT:-5173}:5173"
     environment:
       - PORT=7700
       - HOST=vivi.localhost
@@ -34,6 +34,9 @@ services:
       - CONTAINER_RUNTIME=docker
       - MANAGED_COMPOSE=1
       - HOST_DATA_DIR=${PWD}/vivi-data
+      - VIVI_OPERATOR_USER=${VIVI_OPERATOR_USER:-vivi}
+      - VIVI_OPERATOR_PASSWORD=${VIVI_OPERATOR_PASSWORD:-}
+      - VIVI_TRUST_PROXY_HOPS=${VIVI_TRUST_PROXY_HOPS:-0}
     volumes:
       - .:/app
       - /app/node_modules

@@ -8,7 +8,7 @@ interface GitHubIssuesProps {
   onTaskDescriptionChange: (description: string) => void;
 }
 
-/** Build a task description for Claude from an ordered list of selected issues. */
+/** Build a task description for the selected coding agent from ordered issues. */
 function buildTaskDescription(issues: GitHubIssue[]): string {
   if (issues.length === 0) return "";
 
@@ -209,7 +209,7 @@ export function GitHubIssues({ repoPath, onTaskDescriptionChange }: GitHubIssues
         <div className="space-y-2 p-3 bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg">
           <p className="text-xs font-medium text-gray-300">Implementation Order</p>
           <p className="text-xs text-gray-500">
-            Claude will implement these in order, creating a PR after each to avoid merge conflicts.
+            The selected agent will implement these in order, creating a PR after each to avoid merge conflicts.
           </p>
           <div className="flex flex-wrap items-center gap-1.5">
             {orderedSelected.map((num, idx) => (
@@ -245,7 +245,7 @@ export function GitHubIssues({ repoPath, onTaskDescriptionChange }: GitHubIssues
 
       {orderedSelected.length === 1 && result && (
         <p className="text-xs text-gray-500 px-1">
-          1 issue selected — Claude will implement it when the session starts.
+          1 issue selected — the selected agent will implement it when the session starts.
         </p>
       )}
     </div>

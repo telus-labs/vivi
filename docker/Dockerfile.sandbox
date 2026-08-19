@@ -75,11 +75,22 @@ RUN if su - agent -c 'which claude' > /dev/null 2>&1; then \
     fi \
     && su - agent -c 'claude --version' || claude --version
 
+# OpenAI Codex CLI is pinned so Vivi's terminal contract stays reproducible.
+ARG CODEX_VERSION=0.147.0
+RUN npm install -g @openai/codex@${CODEX_VERSION} \
+    && codex --version
+
+COPY docker/vivi-run-agent.sh /usr/local/bin/vivi-run-agent
+RUN chmod +x /usr/local/bin/vivi-run-agent
+
 # Claude config: accept tos, allow dangerously-skip-permissions. Model is left
 # unset so Claude Code picks its own current default (no stale pin to maintain).
 RUN mkdir -p /home/agent/.claude && \
     echo '{"hasCompletedOnboarding": true, "acceptedTos": true}' > /home/agent/.claude.json && \
     chown -R agent:agent /home/agent/.claude /home/agent/.claude.json
+
+RUN mkdir -p /home/agent/.codex \
+    && chown -R agent:agent /home/agent/.codex
 
 # Mark container as sandbox so Claude Code suppresses the bypass-permissions warning
 ENV IS_SANDBOX=1

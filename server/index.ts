@@ -1,7 +1,7 @@
 /**
  * Vivi backend server.
  *
- * REST API + WebSocket server for managing multiple sandboxed Claude agent sessions.
+ * REST API + WebSocket server for managing multiple sandboxed coding-agent sessions.
  */
 
 import express from "express";
@@ -25,6 +25,7 @@ import * as sandboxImages from "./sandbox-images.js";
 import * as container from "./container.js";
 import { restoreSessions } from "./container.js";
 import * as auth from "./auth.js";
+import * as codexAuth from "./codex-auth.js";
 import * as gitPolicy from "./git-policy.js";
 import * as pr from "./pr.js";
 import * as ports from "./ports.js";
@@ -34,6 +35,9 @@ import * as githubIssues from "./github-issues.js";
 import * as github from "./github.js";
 import * as profiles from "./profiles.js";
 import * as secretRequests from "./secret-requests.js";
+import * as hostFiles from "./host-files.js";
+import { isAgentId, listAgents } from "./agents.js";
+import { isOperatorAuthorized, operatorAuthMiddleware, rejectUnauthorizedUpgrade } from "./operator-auth.js";
 import rateLimit from "express-rate-limit";
 
 process.on("uncaughtException", (err: NodeJS.ErrnoException) => {
@@ -88,10 +92,13 @@ const RATE_LIMITS = {
 const limiter = (key: keyof typeof RATE_LIMITS) => rateLimit(RATE_LIMITS[key]);
 
 const app = express();
-// Behind cloudflared (boyhouse) the real client IP arrives via X-Forwarded-For.
-// Trust one proxy hop so express-rate-limit uses that IP for keying and doesn't
-// throw ERR_ERL_UNEXPECTED_X_FORWARDED_FOR on every request.
-app.set("trust proxy", 1);
+// Trust reverse-proxy forwarding only when explicitly configured. Enabling
+// this unconditionally lets direct clients spoof X-Forwarded-For and evade
+// per-IP rate limits.
+const trustProxyHops = Number.parseInt(process.env.VIVI_TRUST_PROXY_HOPS || "0", 10);
+if (Number.isSafeInteger(trustProxyHops) && trustProxyHops > 0) {
+  app.set("trust proxy", trustProxyHops);
+}
 
 // Restrict CORS to same-origin and known dev origins. Reflecting any origin
 // (the cors() default) lets drive-by sites make credentialed reads of the API.
@@ -107,11 +114,12 @@ app.use(cors((req, cb) => {
   } else if (STATIC_ALLOWED_ORIGINS.has(origin)) {
     allowed = true;
   } else {
-    // Same-origin behind any proxy hostname (e.g. cloudflared): Origin host == Host.
+    // Same-origin behind any reverse proxy: Origin host == Host.
     try { allowed = !!req.headers.host && new URL(origin).host === req.headers.host; } catch {}
   }
   cb(null, { origin: allowed, credentials: true });
 }));
+app.use(operatorAuthMiddleware);
 app.use(express.json());
 
 // Shared-secret guard for proxy→host trusted routes. Enforced only when
@@ -135,6 +143,10 @@ function requireInternalToken(req: express.Request, res: express.Response, next:
 // --- Health ---
 app.get("/api/config", limiter("health"), (_req, res) => {
   res.json({ host: HOST });
+});
+
+app.get("/api/agents", limiter("health"), (_req, res) => {
+  res.json(listAgents().map(({ id, displayName, profileDirectory }) => ({ id, displayName, profileDirectory })));
 });
 
 app.get("/api/health", limiter("health"), (_req, res) => {
@@ -471,53 +483,49 @@ app.post("/api/auth/extract-token", limiter("auth"), (_req, res) => {
   }
 });
 
+app.get("/api/auth/codex/status", limiter("auth"), (_req, res) => {
+  res.json(codexAuth.getCodexAuthStatus());
+});
+
+app.delete("/api/auth/codex", limiter("auth"), (_req, res) => {
+  try {
+    codexAuth.clearCodexAuth();
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : "Unable to remove Codex authentication" });
+  }
+});
+
 // --- Filesystem completion ---
 app.get("/api/fs/complete", limiter("fsComplete"), (req, res) => {
   const input = String(req.query.path || "");
-
-  // Resolve ~ to home directory
-  const resolved = input.startsWith("~")
-    ? path.join(os.homedir(), input.slice(1))
-    : input;
-
-  // Determine directory to list and prefix to filter by
-  let dir: string;
-  let prefix: string;
-  if (resolved.endsWith("/")) {
-    dir = resolved;
-    prefix = "";
-  } else {
-    dir = path.dirname(resolved);
-    prefix = path.basename(resolved).toLowerCase();
-  }
-
   try {
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
-    const results: { name: string; path: string; isDir: boolean; isGit: boolean }[] = [];
+    res.json(hostFiles.completeDirectoryPath(input));
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "Unable to complete path" });
+  }
+});
 
-    for (const entry of entries) {
-      if (entry.name.startsWith(".") && !prefix.startsWith(".")) continue;
-      if (prefix && !entry.name.toLowerCase().startsWith(prefix)) continue;
-      if (!entry.isDirectory()) continue;
+app.get("/api/fs/browse", limiter("fsComplete"), (req, res) => {
+  try {
+    const input = req.query.path === undefined ? undefined : String(req.query.path);
+    const showHidden = req.query.hidden === "1" || req.query.hidden === "true";
+    res.json(hostFiles.listDirectory(input, showHidden));
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "Unable to browse directory" });
+  }
+});
 
-      const fullPath = path.join(dir, entry.name);
-      const isGit = fs.existsSync(path.join(fullPath, ".git"));
-      results.push({ name: entry.name, path: fullPath, isDir: true, isGit });
+app.post("/api/fs/directories", limiter("sessionWrite"), (req, res) => {
+  try {
+    const { parentPath, name, initializeGit } = req.body ?? {};
+    if (typeof parentPath !== "string" || typeof name !== "string") {
+      return res.status(400).json({ error: "parentPath and name are required" });
     }
-
-    results.sort((a, b) => {
-      // Git repos first, then alphabetical
-      if (a.isGit !== b.isGit) return a.isGit ? -1 : 1;
-      return a.name.localeCompare(b.name);
-    });
-
-    // Check if the listed directory itself is a git repo
-    const dirIsGit = fs.existsSync(path.join(dir, ".git"));
-
-    res.json({ dir, dirIsGit, results: results.slice(0, 50) });
-  } catch {
-    // Directory doesn't exist or not readable — return empty results
-    res.json({ dir, dirIsGit: false, results: [] });
+    const entry = hostFiles.createDirectory(parentPath, name, initializeGit === true);
+    res.status(201).json(entry);
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "Unable to create directory" });
   }
 });
 
@@ -900,12 +908,17 @@ app.get("/api/github/branches", limiter("github"), async (req, res) => {
 
 // --- Profiles ---
 app.get("/api/profiles", limiter("profiles"), (_req, res) => {
-  res.json(profiles.listProfiles());
+  const rawAgentId = _req.query.agentId;
+  const agentId = typeof rawAgentId === "string" && isAgentId(rawAgentId) ? rawAgentId : undefined;
+  res.json(profiles.listProfiles(agentId));
 });
 
 app.post("/api/profiles", limiter("profiles"), (req, res) => {
   try {
-    const p = profiles.createProfile(req.body.name, req.body.description);
+    if (req.body.agentId !== undefined && !isAgentId(req.body.agentId)) {
+      return res.status(400).json({ error: "agentId must be claude or codex" });
+    }
+    const p = profiles.createProfile(req.body.name, req.body.description, req.body.agentId);
     res.json(p);
   } catch (err: any) {
     res.status(400).json({ error: err.message });
@@ -1236,6 +1249,11 @@ function extractPortSubdomain(host: string | undefined): string | null {
 const server = http.createServer((req, res) => {
   const subdomain = extractPortSubdomain(req.headers.host);
   if (subdomain) {
+    if (!isOperatorAuthorized(req.headers)) {
+      res.writeHead(401, { "WWW-Authenticate": 'Basic realm="Vivi", charset="UTF-8"' });
+      res.end();
+      return;
+    }
     const pf = getPortForwardBySubdomain(subdomain);
     if (pf) {
       portProxy.web(req, res, { target: `http://127.0.0.1:${pf.hostPort}` });
@@ -1254,6 +1272,7 @@ const server = http.createServer((req, res) => {
 server.on("upgrade", (req, socket, head) => {
   const subdomain = extractPortSubdomain(req.headers.host);
   if (subdomain) {
+    if (rejectUnauthorizedUpgrade(req.headers, socket as net.Socket)) return;
     const pf = getPortForwardBySubdomain(subdomain);
     if (pf) {
       forwardWebSocketUpgrade(req, socket as net.Socket, head, pf);

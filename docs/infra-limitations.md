@@ -7,21 +7,24 @@ enforced. This document is the honest counterpart: what those boundaries do
 
 ## Control-plane exposure
 
-The Express + WebSocket control plane does **not** authenticate operator
-(browser) requests. It is protected by:
+The Express + WebSocket control plane supports HTTP Basic operator
+authentication when `VIVI_OPERATOR_PASSWORD` is set. The release CLI creates
+and persists a strong password automatically. Authentication covers REST,
+terminal/monitor/container WebSockets, and forwarded application ports.
 
-- **Bind address** — defaults to loopback (`127.0.0.1`). It binds `0.0.0.0`
-  only when `HOST` is set to a hostname, which is an explicit "expose me"
-  choice.
+It is also protected by:
+
+- **Published bind address** — release Compose publishes to loopback by
+  default. Set `APP_BIND_ADDRESS` to one specific private/VPN address when
+  remote access is required.
 - **CORS + WS origin checks** — a drive-by website cannot read API responses or
   open the terminal/monitor/docker WebSockets cross-origin.
 
-**Limitation:** once bound to `0.0.0.0`, any non-browser client on the network
-(CORS does not constrain non-browsers) can drive the full API — start sessions,
-open sandbox shells, trigger the self-updater. **If you expose Vivi beyond
-loopback, put it behind an authenticating reverse proxy / tunnel** (e.g. the
-documented Cloudflare Tunnel setup). Do not expose it directly on an untrusted
-network.
+**Limitation:** authentication is opt-in when running directly from source; an
+unset `VIVI_OPERATOR_PASSWORD` preserves the local developer workflow. CORS
+does not constrain non-browser clients. Never publish an unauthenticated source
+deployment beyond loopback, and keep an interface-specific firewall rule even
+when operator authentication is enabled.
 
 The sandbox→host path *is* authenticated: the proxy's `vivi.internal` route is
 restricted to `/api/sandbox/*` and (when `VIVI_INTERNAL_TOKEN` is set) carries a

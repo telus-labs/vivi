@@ -277,7 +277,7 @@ export function LiveDiffView({ sessionId }: LiveDiffViewProps) {
       {diff !== null && !loading && files.length === 0 && (
         <div className="py-8 text-center text-gray-500 text-sm">
           <FileCode2 className="w-8 h-8 mx-auto mb-2 opacity-50" />
-          No changes yet. Changes will appear here as Claude works.
+          No changes yet. Changes will appear here as the agent works.
         </div>
       )}
       {diff !== null && !loading && files.length > 0 && (

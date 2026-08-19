@@ -54,7 +54,7 @@ export function DockerContainers({ sessionId, onContainerCount }: DockerContaine
       {containers.length === 0 ? (
         <div className="py-8 text-center text-gray-500 text-sm border border-dashed border-[var(--color-border)] rounded-lg">
           <Container className="w-8 h-8 mx-auto mb-2 opacity-50" />
-          No containers yet. Claude can run{" "}
+          No containers yet. The agent can run{" "}
           <code className="px-1 py-0.5 bg-[var(--color-surface)] rounded text-xs font-mono">
             docker run ...
           </code>{" "}

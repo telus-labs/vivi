@@ -24,7 +24,7 @@ export function Approvals({ sessionId, sessionNames, onViewDiff }: ApprovalsProp
   const visible = prs.filter((p) => p.status !== "dismissed");
 
   if (loading) return <div className="flex items-center justify-center py-12 text-gray-500"><RefreshCw className="w-5 h-5 animate-spin mr-2" />Loading branches...</div>;
-  if (visible.length === 0) return <div className="py-8 text-center text-gray-500 text-sm border border-dashed border-[var(--color-border)] rounded-lg"><GitBranch className="w-8 h-8 mx-auto mb-2 opacity-50" />No branches yet. Claude will submit branches when work is ready.</div>;
+  if (visible.length === 0) return <div className="py-8 text-center text-gray-500 text-sm border border-dashed border-[var(--color-border)] rounded-lg"><GitBranch className="w-8 h-8 mx-auto mb-2 opacity-50" />No branches yet. The agent will submit branches when work is ready.</div>;
 
   return (
     <div className="space-y-3">

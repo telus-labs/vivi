@@ -1,6 +1,5 @@
 /**
- * Named Claude profiles — each profile is a ~/.claude snapshot stored on the host.
- * Files live in data/profiles/{id}/claude/; SQLite holds metadata.
+ * Named coding-agent profiles stored on the host; SQLite holds metadata.
  */
 
 import crypto from "node:crypto";
@@ -10,6 +9,7 @@ import { execSync } from "node:child_process";
 import db from "./db.js";
 import { runtime } from "./runtime.js";
 import { paths } from "./paths.js";
+import { getAgent, type AgentId } from "./agents.js";
 
 export interface Profile {
   id: string;
@@ -18,12 +18,14 @@ export interface Profile {
   autoSave: boolean;
   createdAt: string;
   lastUsedAt: string | null;
+  agentId: AgentId;
 }
 
 const PROFILES_DIR = paths().profilesDir;
 
-export function getProfileDir(id: string): string {
-  return path.join(PROFILES_DIR, id, "claude");
+export function getProfileDir(id: string, agentId?: AgentId): string {
+  const resolvedAgentId = agentId ?? getProfile(id)?.agentId ?? "claude";
+  return path.join(PROFILES_DIR, id, resolvedAgentId);
 }
 
 function rowToProfile(row: any): Profile {
@@ -34,11 +36,14 @@ function rowToProfile(row: any): Profile {
     autoSave: row.auto_save === 1,
     createdAt: row.created_at,
     lastUsedAt: row.last_used_at ?? null,
+    agentId: getAgent(row.agent_id).id,
   };
 }
 
-export function listProfiles(): Profile[] {
-  const rows = db.prepare("SELECT * FROM profiles ORDER BY name").all();
+export function listProfiles(agentId?: AgentId): Profile[] {
+  const rows = agentId
+    ? db.prepare("SELECT * FROM profiles WHERE agent_id = ? ORDER BY name").all(agentId)
+    : db.prepare("SELECT * FROM profiles ORDER BY agent_id, name").all();
   return rows.map(rowToProfile);
 }
 
@@ -47,13 +52,13 @@ export function getProfile(id: string): Profile | undefined {
   return row ? rowToProfile(row) : undefined;
 }
 
-export function createProfile(name: string, description?: string): Profile {
+export function createProfile(name: string, description?: string, agentId: AgentId = "claude"): Profile {
   const id = crypto.randomUUID().slice(0, 6);
-  const dir = getProfileDir(id);
+  const dir = getProfileDir(id, agentId);
   fs.mkdirSync(dir, { recursive: true });
   db.prepare(
-    "INSERT INTO profiles (id, name, description) VALUES (?, ?, ?)"
-  ).run(id, name, description ?? null);
+    "INSERT INTO profiles (id, name, description, agent_id) VALUES (?, ?, ?, ?)"
+  ).run(id, name, description ?? null, agentId);
   return rowToProfile(db.prepare("SELECT * FROM profiles WHERE id = ?").get(id));
 }
 
@@ -73,6 +78,7 @@ export function updateProfile(id: string, patch: { name?: string; description?: 
 }
 
 export function deleteProfile(id: string): void {
+  db.prepare("UPDATE active_containers SET profile_id = NULL WHERE profile_id = ?").run(id);
   db.prepare("DELETE FROM profiles WHERE id = ?").run(id);
   const dir = path.join(PROFILES_DIR, id);
   if (fs.existsSync(dir)) {
@@ -85,12 +91,16 @@ export function markProfileUsed(id: string): void {
 }
 
 export function saveProfileFromContainer(profileId: string, containerName: string): void {
-  const dir = getProfileDir(profileId);
+  const profile = getProfile(profileId);
+  if (!profile) throw new Error(`Profile ${profileId} not found`);
+  const agent = getAgent(profile.agentId);
+  const dir = getProfileDir(profileId, profile.agentId);
   fs.mkdirSync(dir, { recursive: true });
   // Use `docker exec tar` instead of `docker cp` because `docker cp` fails when
   // the container has a Unix socket bind-mounted (/var/run/docker.sock) — Docker
   // walks the overlay merged layer and errors with "not a directory".
-  execSync(`${runtime.bin} exec ${containerName} tar cf - -C /home/agent/.claude . | tar xf - -C ${JSON.stringify(dir)}`, {
+  const excludeAuth = profile.agentId === "codex" ? " --exclude=./auth.json" : "";
+  execSync(`${runtime.bin} exec ${containerName} tar${excludeAuth} cf - -C /home/agent/${agent.profileDirectory} . | tar xf - -C ${JSON.stringify(dir)}`, {
     stdio: "pipe",
     timeout: 30_000,
   });

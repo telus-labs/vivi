@@ -9,6 +9,8 @@ vi.mock("../lib/api", () => ({
   addSecret: vi.fn(),
   removeSecret: vi.fn(),
   updateSecret: vi.fn(),
+  getCodexAuthStatus: vi.fn(),
+  clearCodexAuth: vi.fn(),
 }));
 
 import * as api from "../lib/api";
@@ -44,9 +46,30 @@ beforeEach(() => {
   mockedApi.addSecret.mockResolvedValue(baseSecrets[0]);
   mockedApi.removeSecret.mockResolvedValue({ ok: true });
   mockedApi.updateSecret.mockResolvedValue(baseSecrets[0]);
+  mockedApi.getCodexAuthStatus.mockResolvedValue({ authenticated: false });
+  mockedApi.clearCodexAuth.mockResolvedValue({ ok: true });
 });
 
 describe("SecretManager", () => {
+  it("starts the Codex device login flow", async () => {
+    const user = userEvent.setup();
+    const onLoginStart = vi.fn();
+    render(<SecretManager onLoginStart={onLoginStart} />);
+
+    await user.click(await screen.findByRole("button", { name: "Sign in to Codex" }));
+    expect(onLoginStart).toHaveBeenCalledWith("codex");
+  });
+
+  it("shows and disconnects persisted Codex auth", async () => {
+    const user = userEvent.setup();
+    mockedApi.getCodexAuthStatus.mockResolvedValue({ authenticated: true });
+    render(<SecretManager />);
+
+    expect(await screen.findByText("Connected")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Disconnect" }));
+    await waitFor(() => expect(mockedApi.clearCodexAuth).toHaveBeenCalled());
+  });
+
   it("renders secrets after loading", async () => {
     render(<SecretManager />);
 

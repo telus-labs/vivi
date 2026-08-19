@@ -24,9 +24,7 @@ echo "[entrypoint] All init scripts complete"
 touch /tmp/.sandbox-ready
 echo "[entrypoint] Sandbox ready"
 
-# Drop to agent user — auto-start claude when a task description is provided
-if [ -n "$TASK_DESCRIPTION" ]; then
-  exec gosu agent claude --dangerously-skip-permissions -p "$TASK_DESCRIPTION"
-else
-  exec gosu agent "$@"
-fi
+# Drop to the unprivileged agent user and keep the sandbox service alive.
+# The persistent browser PTY launches the selected agent and supplies the
+# initial prompt. Keeping PID 1 idle makes its output reconnectable.
+exec gosu agent "$@"

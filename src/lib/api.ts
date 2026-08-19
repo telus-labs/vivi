@@ -14,6 +14,7 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
 
 // Config
 export const getConfig = () => request<{ host: string }>("/config");
+export const listAgents = () => request<import("./types").AgentDefinition[]>("/agents");
 
 // Sessions (multi-session)
 export const getSessions = () => request<import("./types").SessionState[]>("/sessions");
@@ -23,6 +24,7 @@ export const startSession = (body: {
   taskDescription?: string;
   profileId?: string;
   imageId?: number;
+  agentId?: import("./types").AgentId;
   githubRepo?: import("./types").GitHubRepoSelection;
 }) =>
   request<import("./types").SessionState>("/sessions", { method: "POST", body: JSON.stringify(body) });
@@ -58,6 +60,10 @@ export const extractToken = () =>
   request<{ ok: boolean; secret?: import("./types").SecretPublic; error?: string }>("/auth/extract-token", {
     method: "POST",
   });
+export const getCodexAuthStatus = () =>
+  request<{ authenticated: boolean }>("/auth/codex/status");
+export const clearCodexAuth = () =>
+  request<{ ok: boolean }>("/auth/codex", { method: "DELETE" });
 
 // Filesystem completion
 export interface FsEntry {
@@ -68,6 +74,38 @@ export interface FsEntry {
 }
 export const completePath = (pathStr: string) =>
   request<{ dir: string; dirIsGit: boolean; results: FsEntry[] }>(`/fs/complete?path=${encodeURIComponent(pathStr)}`);
+
+export type HostFileKind = "directory" | "file" | "symlink";
+export interface HostFileEntry {
+  name: string;
+  path: string;
+  kind: HostFileKind;
+  isDirectory: boolean;
+  isGit: boolean;
+  isHidden: boolean;
+  isAccessible: boolean;
+  size: number | null;
+  modifiedAt: string | null;
+}
+export interface HostDirectoryListing {
+  root: string;
+  path: string;
+  parent: string | null;
+  isGit: boolean;
+  entries: HostFileEntry[];
+  truncated: boolean;
+}
+export const browseHostDirectory = (pathStr?: string, showHidden = false) => {
+  const params = new URLSearchParams();
+  if (pathStr) params.set("path", pathStr);
+  if (showHidden) params.set("hidden", "1");
+  return request<HostDirectoryListing>(`/fs/browse?${params.toString()}`);
+};
+export const createHostDirectory = (parentPath: string, name: string, initializeGit: boolean) =>
+  request<HostFileEntry>("/fs/directories", {
+    method: "POST",
+    body: JSON.stringify({ parentPath, name, initializeGit }),
+  });
 
 // Monitor
 export const getHealth = (sessionId?: string) =>
@@ -127,6 +165,8 @@ export interface UpdateStatus {
   remoteCommit: string;
   behindCount: number;
   commitMessages: string[];
+  supported: boolean;
+  reason?: string;
 }
 export const checkForUpdate = () => request<UpdateStatus>("/update/check");
 export const applyUpdate = () =>
@@ -174,8 +214,9 @@ export const updateGitPolicy = (policy: Partial<import("./types").GitPolicy>) =>
   request<import("./types").GitPolicy>("/git/policy", { method: "PUT", body: JSON.stringify(policy) });
 
 // Profiles
-export const listProfiles = () => request<import("./types").Profile[]>("/profiles");
-export const createProfile = (body: { name: string; description?: string }) =>
+export const listProfiles = (agentId?: import("./types").AgentId) =>
+  request<import("./types").Profile[]>(`/profiles${agentId ? `?agentId=${encodeURIComponent(agentId)}` : ""}`);
+export const createProfile = (body: { name: string; description?: string; agentId: import("./types").AgentId }) =>
   request<import("./types").Profile>("/profiles", { method: "POST", body: JSON.stringify(body) });
 export const updateProfile = (id: string, patch: { name?: string; description?: string; autoSave?: boolean }) =>
   request<import("./types").Profile>(`/profiles/${id}`, { method: "PATCH", body: JSON.stringify(patch) });

@@ -186,7 +186,7 @@ export function PortForwards({ sessionId, onPreview }: PortForwardsProps) {
               {userPorts.length === 0 ? (
                 <div className="py-8 text-center text-gray-500 text-sm border border-dashed border-[var(--color-border)] rounded-lg">
                   <Network className="w-8 h-8 mx-auto mb-2 opacity-50" />
-                  No ports forwarded. Claude can run{" "}
+                  No ports forwarded. The agent can run{" "}
                   <code className="px-1 py-0.5 bg-[var(--color-surface)] rounded text-xs font-mono">
                     open-port &lt;port&gt;
                   </code>{" "}

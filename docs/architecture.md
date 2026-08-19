@@ -10,7 +10,7 @@ You (browser) ──── REST + WebSocket ────► Vivi server (Express
                                    ┌─── Docker network (internal) ───┐
                                    │                                  │
                                    │  Sandbox container(s)            │
-                                   │  • Claude Code (no permissions)  │
+                                   │  • Codex or Claude (no prompts)  │
                                    │  • git + gh + Docker CLI         │
                                    │  • git daemon for push/pull      │
                                    │                                  │
@@ -41,7 +41,8 @@ Express + WebSocket server running on the host. Manages container lifecycle, bri
 |--------|------|
 | `index.ts` | REST + WebSocket routes, rate limiting, graceful shutdown |
 | `container.ts` | Multi-session lifecycle — `docker run`, git bundle, session restore |
-| `pty.ts` | WebSocket PTY bridge, persistent Claude sessions that survive tab switches |
+| `agents.ts` | Agent definitions: CLI, branch prefix, profile directory, attribution |
+| `pty.ts` | WebSocket PTY bridge, persistent agent sessions that survive tab switches |
 | `pr.ts` | PR interception, approval workflow, git bundle extraction |
 | `ports.ts` | TCP port forwarding via `docker exec` + socat |
 | `secrets.ts` | Secret store (SQLite) + proxy config sync |
@@ -49,7 +50,7 @@ Express + WebSocket server running on the host. Manages container lifecycle, bri
 | `docker-namespace-proxy.ts` | Per-session Docker socket proxy (prevents namespace escape) |
 | `docker-events.ts` | Event-driven container state tracking (replaces polling) |
 | `monitor.ts` | Activity monitor for agent health tracking |
-| `profiles.ts` | Named Claude profile management (`~/.claude` persistence) |
+| `profiles.ts` | Named per-agent profile management (`~/.codex` / `~/.claude`) |
 | `github-issues.ts` | GitHub Issues integration |
 | `sandbox-images.ts` | Sandbox image registry (CRUD + validation) |
 | `updater.ts` | Git-based auto-update detection |
@@ -82,7 +83,7 @@ React + Vite SPA with a multi-tab session interface.
 | File | Role |
 |------|------|
 | `proxy.ts` | MITM proxy — key injection, push interception, credential proxying |
-| `Dockerfile.sandbox` | Sandbox image (Claude Code + git + gh + socat + Docker CLI) |
+| `Dockerfile.sandbox` | Sandbox image (Codex + Claude Code + git + gh + socat + Docker CLI) |
 | `Dockerfile.proxy` | Proxy image |
 | `entrypoint.sh` | Sandbox init (bundle clone, git config, CLAUDE.md, git daemon) |
 | `open-port.sh` | Port forwarding request script |
@@ -109,7 +110,7 @@ React + Vite SPA with a multi-tab session interface.
 
 ### API key injection
 
-1. User adds a secret in the UI (e.g., Anthropic API key)
+1. User adds a secret in the UI (for example an OpenAI or Anthropic API key)
 2. Server stores the real key and generates a placeholder (`sk-sandbox-{id}`)
 3. Placeholder is injected into the sandbox as an env var
 4. When the sandbox makes an API request, the MITM proxy swaps the placeholder for the real key
